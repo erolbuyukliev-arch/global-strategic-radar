@@ -132,74 +132,32 @@ def parse_mnd_page(url):
 
 
 @st.cache_data(ttl=1800)
+@st.cache_data(ttl=1800)
 def discover_mnd_reports():
-    """Discover recent PLA Activity reports from the official MND site."""
-    try:
-        r = requests.get(
-            MND_LIST_URL,
-            timeout=30,
-            headers=HEADERS
-        )
-        r.raise_for_status()
+    """Discover recent MND PLA Activity reports by probing recent official IDs."""
+    parsed = []
+    errors = []
 
-        soup = BeautifulSoup(r.text, "html.parser")
+    # MND report IDs are sequential. Probe a recent window.
+    for report_id in range(87320, 87220, -1):
+        url = f"{MND_BASE}/en/News/PLAAct/{report_id}"
 
-        links = []
-
-        for a in soup.find_all("a", href=True):
-            href = a.get("href", "").strip()
-            label = a.get_text(" ", strip=True)
-
-            full = urljoin(MND_BASE, href).rstrip("/")
-
-            # Official MND PLA Activity pages:
-            # /en/News/PLAAct/87306
-            if re.search(r"/en/news/plaact/\d+$", full, re.I):
-                links.append(full)
-
-            # Also catch links whose text identifies PLA Activities.
-            elif (
-                "PLA Activities" in label
-                and re.search(r"/\d+$", full)
-            ):
-                links.append(full)
-
-        # Remove duplicates
-        links = list(dict.fromkeys(links))
-
-        parsed = []
-        errors = []
-
-        # Try newest-looking links first
-        links = sorted(
-            links,
-            key=lambda x: int(re.search(r"(\d+)$", x).group(1)),
-            reverse=True
-        )
-
-        for url in links[:30]:
+        try:
             item, err = parse_mnd_page(url)
 
             if item:
                 parsed.append(item)
-            else:
-                errors.append((url, err))
 
-        df = pd.DataFrame(parsed)
+        except Exception as e:
+            errors.append((url, str(e)))
 
-        if not df.empty:
-            df = df.drop_duplicates(subset=["URL"])
-            df = df.sort_values(
-                "Report date",
-                ascending=False
-            )
+    df = pd.DataFrame(parsed)
 
-        return df, errors
+    if not df.empty:
+        df = df.drop_duplicates(subset=["URL"])
+        df = df.sort_values("Report date", ascending=False)
 
-    except Exception as e:
-        return pd.DataFrame(), [("LIST", str(e))]
-
-# ---------------------------------------------------------
+    return df, errors
 # Fallback: validated records already established manually.
 # These remain available if MND temporarily blocks automated access.
 # ---------------------------------------------------------
