@@ -14,7 +14,7 @@ st.set_page_config(
 # DATA SOURCES
 # =========================================================
 GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
-GDELT_QUERY = '"China" "Taiwan""
+GDELT_QUERY = '"China" "Taiwan"'
 
 MND_SOURCE = "https://www.mnd.gov.tw/en/news/plaact"
 MND_NOTE = (
