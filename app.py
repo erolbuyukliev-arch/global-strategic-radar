@@ -7,7 +7,7 @@ from datetime import datetime
 
 from bs4 import BeautifulSoup
 from pypdf import PdfReader
-
+from pdf_knowledge import render_pdf_knowledge_section
 
 # ============================================================
 # CONFIGURATION
@@ -1442,3 +1442,6 @@ st.caption(
     "GLOBAL STRATEGIC RADAR • Evidence-based strategic monitoring • "
     "Operational data and research knowledge are intentionally separated."
 )
+st.divider()
+
+render_pdf_knowledge_section()
