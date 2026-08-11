@@ -133,50 +133,71 @@ def parse_mnd_page(url):
 
 @st.cache_data(ttl=1800)
 def discover_mnd_reports():
-    """Discover recent PLA Activity report links from the official MND list."""
+    """Discover recent PLA Activity reports from the official MND site."""
     try:
-        r = requests.get(MND_LIST_URL, timeout=20, headers=HEADERS)
+        r = requests.get(
+            MND_LIST_URL,
+            timeout=30,
+            headers=HEADERS
+        )
         r.raise_for_status()
+
         soup = BeautifulSoup(r.text, "html.parser")
 
         links = []
+
         for a in soup.find_all("a", href=True):
-            href = a["href"]
+            href = a.get("href", "").strip()
             label = a.get_text(" ", strip=True)
-            full = urljoin(MND_BASE, href)
 
-            if "/en/news/plaact/" in full.lower() or "/en/news/plaact/" in full.lower():
-                if re.search(r"/\d{4,}$", full):
-                    links.append(full)
+            full = urljoin(MND_BASE, href).rstrip("/")
 
-            # Also accept links whose visible text contains PLA Activities.
-            if "PLA Activities" in label and re.search(r"/\d{4,}$", full):
+            # Official MND PLA Activity pages:
+            # /en/News/PLAAct/87306
+            if re.search(r"/en/news/plaact/\d+$", full, re.I):
                 links.append(full)
 
-        # De-duplicate while preserving order.
-        seen = set()
-        links = [x for x in links if not (x in seen or seen.add(x))]
+            # Also catch links whose text identifies PLA Activities.
+            elif (
+                "PLA Activities" in label
+                and re.search(r"/\d+$", full)
+            ):
+                links.append(full)
+
+        # Remove duplicates
+        links = list(dict.fromkeys(links))
 
         parsed = []
         errors = []
+
+        # Try newest-looking links first
+        links = sorted(
+            links,
+            key=lambda x: int(re.search(r"(\d+)$", x).group(1)),
+            reverse=True
+        )
+
         for url in links[:30]:
             item, err = parse_mnd_page(url)
+
             if item:
                 parsed.append(item)
-            elif err:
+            else:
                 errors.append((url, err))
 
         df = pd.DataFrame(parsed)
+
         if not df.empty:
-            # Prefer newest report date and remove exact duplicate URLs.
             df = df.drop_duplicates(subset=["URL"])
-            df = df.sort_values("Report date", ascending=False)
+            df = df.sort_values(
+                "Report date",
+                ascending=False
+            )
 
         return df, errors
 
     except Exception as e:
         return pd.DataFrame(), [("LIST", str(e))]
-
 
 # ---------------------------------------------------------
 # Fallback: validated records already established manually.
