@@ -1444,4 +1444,3 @@ st.caption(
 )
 st.divider()
 
-render_pdf_knowledge_section()
