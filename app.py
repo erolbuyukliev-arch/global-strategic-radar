@@ -7,7 +7,6 @@ from datetime import datetime
 
 from bs4 import BeautifulSoup
 from pypdf import PdfReader
-from pdf_knowledge import render_pdf_knowledge_section
 
 # ============================================================
 # CONFIGURATION
@@ -733,6 +732,7 @@ def analyse_pdf_text(pages):
 # ============================================================
 
 def render_pdf_knowledge_section():
+    """Render the public PDF Knowledge Base without public uploads."""
 
     st.markdown(
         '<div class="section-title">📚 PDF Strategic Knowledge Base</div>',
@@ -741,280 +741,39 @@ def render_pdf_knowledge_section():
 
     st.write(
         """
-        Upload academic papers, books, reports, strategic documents
-        and other PDF sources. The system extracts text, divides the
-        document into analytical segments, and identifies the strategic
-        domains most strongly represented.
+        The Global Strategic Radar Knowledge Base contains curated
+        academic papers, books, research reports, strategic documents,
+        policy papers and other selected sources.
         """
     )
 
     st.info(
-        "Important: PDF analysis is a separate layer from the operational Radar. "
-        "Documents are knowledge sources, not automatic evidence."
+        "The Knowledge Base is maintained by the administrator. "
+        "Public users cannot upload or modify documents."
     )
 
-    uploaded_files = st.file_uploader(
-        "Upload PDF document",
-        type=["pdf"],
-        accept_multiple_files=True,
-        key="strategic_pdf_uploader",
+    st.subheader("🔎 Search the Knowledge Base")
+
+    st.caption(
+        "Search will become available after the administrator publishes "
+        "the first documents."
     )
 
-    if uploaded_files:
+    st.subheader("🎯 Strategic Assessment")
 
-        for uploaded_file in uploaded_files:
-
-            already_loaded = any(
-                d["name"] == uploaded_file.name
-                for d in st.session_state.pdf_documents
-            )
-
-            if already_loaded:
-                continue
-
-            pages, error = extract_pdf_text(
-                uploaded_file
-            )
-
-            if error:
-
-                st.error(
-                    f"Error processing {uploaded_file.name}: {error}"
-                )
-
-                continue
-
-            chunks = chunk_text(
-                pages
-            )
-
-            analysis = analyse_pdf_text(
-                pages
-            )
-
-            document = {
-                "name": uploaded_file.name,
-                "pages": len(pages),
-                "chunks": len(chunks),
-                "analysis": analysis,
-            }
-
-            st.session_state.pdf_documents.append(
-                document
-            )
-
-            for chunk in chunks:
-
-                st.session_state.pdf_chunks.append(
-                    {
-                        "document": uploaded_file.name,
-                        "page": chunk["page"],
-                        "text": chunk["text"],
-                    }
-                )
-
-    # --------------------------------------------------------
-    # DOCUMENT LIST
-    # --------------------------------------------------------
-
-    if st.session_state.pdf_documents:
-
-        st.subheader(
-            "Loaded documents"
-        )
-
-        for document in st.session_state.pdf_documents:
-
-            with st.expander(
-                f"📄 {document['name']}"
-            ):
-
-                col1, col2, col3 = st.columns(3)
-
-                col1.metric(
-                    "Pages",
-                    document["pages"],
-                )
-
-                col2.metric(
-                    "Text segments",
-                    document["chunks"],
-                )
-
-                col3.metric(
-                    "Words",
-                    document["analysis"]["word_count"],
-                )
-
-                st.write(
-                    "Most strongly represented strategic domains:"
-                )
-
-                top_domains = [
-                    x
-                    for x in document["analysis"]["domains"]
-                    if x[1] > 0
-                ][:5]
-
-                for domain, score in top_domains:
-
-                    st.write(
-                        f"**{domain}:** {score}"
-                    )
-
-    # --------------------------------------------------------
-    # SEARCH
-    # --------------------------------------------------------
-
-    st.subheader(
-        "🔎 Search the PDF knowledge base"
+    st.write(
+        """
+        Published sources will support structured strategic analysis
+        covering actors, interests, capabilities, intentions, strategic
+        objectives, risks, opportunities, competing interpretations and
+        intelligence gaps.
+        """
     )
 
-    search_query = st.text_input(
-        "Search for a term or concept",
-        placeholder="e.g. Taiwan, deterrence, nuclear, Belt and Road",
+    st.caption(
+        "Source evidence, analytical inference and uncertainty should "
+        "be kept conceptually separate."
     )
-
-    if search_query:
-
-        query = search_query.lower()
-
-        results = []
-
-        for chunk in st.session_state.pdf_chunks:
-
-            if query in chunk["text"].lower():
-
-                results.append(
-                    chunk
-                )
-
-        st.write(
-            f"Segments found: **{len(results)}**"
-        )
-
-        for result in results[:20]:
-
-            with st.expander(
-                f"{result['document']} — page {result['page']}"
-            ):
-
-                st.write(
-                    result["text"]
-                )
-
-    # --------------------------------------------------------
-    # STRATEGIC ASSESSMENT
-    # --------------------------------------------------------
-
-    st.subheader(
-        "🧭 Strategic Assessment"
-    )
-
-    if st.session_state.pdf_documents:
-
-        selected_document = st.selectbox(
-            "Select document",
-            [
-                d["name"]
-                for d in st.session_state.pdf_documents
-            ],
-        )
-
-        selected = next(
-            d
-            for d in st.session_state.pdf_documents
-            if d["name"] == selected_document
-        )
-
-        analysis = selected["analysis"]
-
-        st.markdown(
-            '<div class="analysis-box">',
-            unsafe_allow_html=True,
-        )
-
-        st.markdown(
-            "### 1. Source characterization"
-        )
-
-        st.write(
-            f"The document contains approximately "
-            f"**{analysis['word_count']:,} words** "
-            f"across **{selected['pages']} pages**."
-        )
-
-        st.markdown(
-            "### 2. Dominant strategic domains"
-        )
-
-        top_domains = [
-            x
-            for x in analysis["domains"]
-            if x[1] > 0
-        ][:5]
-
-        if top_domains:
-
-            for domain, score in top_domains:
-
-                st.write(
-                    f"- **{domain}** — {score} indicators"
-                )
-
-        else:
-
-            st.write(
-                "Insufficient strategic keywords were detected."
-            )
-
-        st.markdown(
-            "### 3. Analytical interpretation"
-        )
-
-        if top_domains:
-
-            dominant = top_domains[0][0]
-
-            st.write(
-                f"The document is most strongly oriented toward "
-                f"**{dominant}**. This does not automatically mean that "
-                f"this domain is the most important to the author; "
-                f"the indicator measures terminology frequency, "
-                f"not causal significance."
-            )
-
-        st.markdown(
-            "### 4. Evidence discipline"
-        )
-
-        st.write(
-            """
-            The next analytical level should distinguish between:
-
-            **Known** — what the author actually claims;
-
-            **Inferred** — what conclusions can be drawn from the stated facts;
-
-            **Contested** — claims for which competing interpretations exist;
-
-            **Unknown** — what the document does not allow us to establish.
-
-            This distinction matters because the frequency of a particular
-            term is not evidence of strategic intent.
-            """
-        )
-
-        st.markdown(
-            '</div>',
-            unsafe_allow_html=True,
-        )
-
-    else:
-
-        st.warning(
-            "Upload at least one PDF document first."
-        )
 
 
 # ============================================================
