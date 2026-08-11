@@ -1,120 +1,369 @@
-import streamlit as st
+import re
+from datetime import datetime
+
 import pandas as pd
 import requests
-import re
 from bs4 import BeautifulSoup
-from datetime import datetime, timezone
-from urllib.parse import urljoin
+import streamlit as st
 
-st.set_page_config(page_title="GLOBAL STRATEGIC RADAR", page_icon="🌐", layout="wide")
+
+# ============================================================
+# GLOBAL STRATEGIC RADAR
+# ============================================================
+
+st.set_page_config(
+    page_title="Global Strategic Radar",
+    page_icon="🌐",
+    layout="wide",
+)
+
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
 
 MND_LIST_URL = "https://www.mnd.gov.tw/en/news/PLAActList"
 MND_BASE = "https://www.mnd.gov.tw"
-GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
+
+GDELT_URL = (
+    "https://api.gdeltproject.org/api/v2/doc/doc"
+)
+
 GDELT_QUERY = '"China" "Taiwan"'
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 GlobalStrategicRadar/0.5"
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 "
+        "Chrome/151.0 Safari/537.36 "
+        "GlobalStrategicRadar/1.0"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
 }
 
-# ---------------------------------------------------------
-# GDELT
-# ---------------------------------------------------------
-@st.cache_data(ttl=900)
-def fetch_gdelt():
-    params = {
-        "query": GDELT_QUERY,
-        "mode": "artlist",
-        "maxrecords": 25,
-        "format": "json",
-        "timespan": "24h",
-        "sort": "datedesc",
-    }
-    try:
-        r = requests.get(GDELT_URL, params=params, timeout=20, headers=HEADERS)
-        r.raise_for_status()
-        data = r.json()
-        rows = [{
-            "title": a.get("title", "Untitled"),
-            "domain": a.get("domain", ""),
-            "url": a.get("url", ""),
-            "published": a.get("seendate", "")
-        } for a in data.get("articles", [])]
-        return pd.DataFrame(rows), None
-    except Exception as e:
-        return pd.DataFrame(columns=["title","domain","url","published"]), str(e)
 
-# ---------------------------------------------------------
-# MND AUTOMATIC INGESTION
-# ---------------------------------------------------------
-def parse_mnd_page(url):
-    """Fetch one official MND PLA Activities page and extract
-    the observation period and four quantitative indicators."""
-    try:
-        r = requests.get(url, timeout=20, headers=HEADERS)
-        r.raise_for_status()
-        soup = BeautifulSoup(r.text, "html.parser")
-        text = soup.get_text(" ", strip=True)
+# ============================================================
+# FALLBACK DATA
+# ============================================================
 
-        # Publication date from page heading/title area.
-        pub_match = re.search(
-            r"PLA Activities\s+(\d{4}\.\d{2}\.\d{2})", text, re.I
+# These are validated observations already checked against
+# official MND pages.
+#
+# Conflicting Aug 4-5 observations are intentionally NOT here.
+# They are retained separately for provenance/conflict detection.
+
+FALLBACK_OBSERVATIONS = [
+    {
+        "Report date": "2026-08-11",
+        "Observation period": "Aug 10 – Aug 11",
+        "PLA aircraft": 2,
+        "Median-line/ADIZ": 2,
+        "PLAN ships": 7,
+        "Official ships": 6,
+        "URL": "https://www.mnd.gov.tw/en/News/PLAAct/87306",
+        "Status": "VALID",
+    },
+    {
+        "Report date": "2026-08-10",
+        "Observation period": "Aug 9 – Aug 10",
+        "PLA aircraft": 1,
+        "Median-line/ADIZ": 1,
+        "PLAN ships": 9,
+        "Official ships": 11,
+        "URL": "https://www.mnd.gov.tw/en/News/PLAAct/87302",
+        "Status": "VALID",
+    },
+    {
+        "Report date": "2026-08-09",
+        "Observation period": "Aug 8 – Aug 9",
+        "PLA aircraft": 4,
+        "Median-line/ADIZ": 2,
+        "PLAN ships": 6,
+        "Official ships": 9,
+        "URL": "https://www.mnd.gov.tw/en/News/PLAAct/87282",
+        "Status": "VALID",
+    },
+    {
+        "Report date": "2026-08-08",
+        "Observation period": "Aug 7 – Aug 8",
+        "PLA aircraft": 14,
+        "Median-line/ADIZ": 11,
+        "PLAN ships": 6,
+        "Official ships": 8,
+        "URL": "https://www.mnd.gov.tw/en/News/PLAAct/87276",
+        "Status": "VALID",
+    },
+    {
+        "Report date": "2026-08-07",
+        "Observation period": "Aug 6 – Aug 7",
+        "PLA aircraft": 10,
+        "Median-line/ADIZ": 6,
+        "PLAN ships": 6,
+        "Official ships": 3,
+        "URL": "https://www.mnd.gov.tw/en/News/PLAAct/87270",
+        "Status": "VALID",
+    },
+    {
+        "Report date": "2026-08-06",
+        "Observation period": "Aug 4 – Aug 5",
+        "PLA aircraft": 14,
+        "Median-line/ADIZ": 6,
+        "PLAN ships": 9,
+        "Official ships": 7,
+        "URL": "https://www.mnd.gov.tw/en/News/PLAAct/87257",
+        "Status": "CONFLICT",
+    },
+]
+
+
+# Explicit conflicting records detected in official MND material.
+CONFLICTING_OBSERVATIONS = [
+    {
+        "Report date": "2026-08-05",
+        "Observation period": "Aug 4 – Aug 5",
+        "PLA aircraft": 21,
+        "Median-line/ADIZ": 17,
+        "PLAN ships": 9,
+        "Official ships": 5,
+        "URL": "https://www.mnd.gov.tw/en/News/PLAAct/87248",
+        "Status": "CONFLICT",
+    },
+    {
+        "Report date": "2026-08-06",
+        "Observation period": "Aug 4 – Aug 5",
+        "PLA aircraft": 14,
+        "Median-line/ADIZ": 6,
+        "PLAN ships": 9,
+        "Official ships": 7,
+        "URL": "https://www.mnd.gov.tw/en/News/PLAAct/87257",
+        "Status": "CONFLICT",
+    },
+]
+
+
+# ============================================================
+# HTTP
+# ============================================================
+
+@st.cache_data(ttl=1800)
+def fetch_url(url):
+    try:
+        response = requests.get(
+            url,
+            timeout=30,
+            headers=HEADERS,
+            allow_redirects=True,
         )
-        report_date = pub_match.group(1) if pub_match else ""
+        response.raise_for_status()
 
-        # Observation period: "6 a.m. Aug. 10 ... to 6 a.m. Aug. 11 ..."
-        period_match = re.search(
-            r"6\s*a\.m\.\s*([A-Z][a-z]{2,8}\.?\s+\d{1,2})"
-            r".{0,120}?"
-            r"to\s*6\s*a\.m\.\s*([A-Z][a-z]{2,8}\.?\s+\d{1,2})",
+        return {
+            "ok": True,
+            "status_code": response.status_code,
+            "text": response.text,
+            "url": response.url,
+            "error": "",
+        }
+
+    except Exception as exc:
+        return {
+            "ok": False,
+            "status_code": None,
+            "text": "",
+            "url": url,
+            "error": str(exc),
+        }
+
+
+# ============================================================
+# MND PAGE PARSER
+# ============================================================
+
+def parse_mnd_page(url):
+    """
+    Fetch one official MND PLA Activity page and extract:
+      - report date
+      - observation period
+      - PLA aircraft
+      - median-line / ADIZ count
+      - PLAN ships
+      - official ships
+    """
+
+    try:
+        result = fetch_url(url)
+
+        if not result["ok"]:
+            return None, (
+                f"HTTP request failed: {result['error']}"
+            )
+
+        soup = BeautifulSoup(
+            result["text"],
+            "html.parser",
+        )
+
+        text = soup.get_text(
+            " ",
+            strip=True,
+        )
+
+        text = re.sub(
+            r"\s+",
+            " ",
+            text,
+        )
+
+        # ----------------------------------------------------
+        # REPORT DATE
+        # ----------------------------------------------------
+
+        pub_match = re.search(
+            r"PLA Activities\s*"
+            r"(\d{4}\.\d{2}\.\d{2})",
             text,
             re.I,
         )
+
+        if not pub_match:
+            pub_match = re.search(
+                r"PLA Activities.*?"
+                r"(\d{4}\.\d{2}\.\d{2})",
+                text,
+                re.I,
+            )
+
+        report_date = (
+            pub_match.group(1)
+            if pub_match
+            else ""
+        )
+
+        # ----------------------------------------------------
+        # OBSERVATION PERIOD
+        # ----------------------------------------------------
+
+        period_match = re.search(
+            r"6\s*a\.m\.\s*"
+            r"([A-Z][a-z]{2,8}\.?\s+\d{1,2})"
+            r".{0,250}?"
+            r"to\s*6\s*a\.m\.\s*"
+            r"([A-Z][a-z]{2,8}\.?\s+\d{1,2})",
+            text,
+            re.I,
+        )
+
         if period_match:
-            period = f"{period_match.group(1)} – {period_match.group(2)}"
+            period = (
+                f"{period_match.group(1)} – "
+                f"{period_match.group(2)}"
+            )
         else:
             period = ""
 
-        # Main activity sentence.
-        activity_match = re.search(
-            r"(\d+)\s+sorties?\s+of\s+PLA\s+aircraft,\s*"
-            r"(\d+)\s+PLAN\s+ships\s+and\s+(\d+)\s+official\s+ships",
-            text,
-            re.I,
-        )
-        if not activity_match:
-            # Some MND reports say "No PLA aircraft..." rather than a number.
-            ship_match = re.search(
-                r"(\d+)\s+PLAN\s+ships\s+and\s+(\d+)\s+official\s+ships",
-                text,
-                re.I,
-            )
-            if not ship_match:
-                return None, "Activity sentence not parsed"
-            aircraft = 0
-            plan = int(ship_match.group(1))
-            official = int(ship_match.group(2))
-        else:
-            aircraft = int(activity_match.group(1))
-            plan = int(activity_match.group(2))
-            official = int(activity_match.group(3))
+        # ----------------------------------------------------
+        # AIRCRAFT / SHIPS
+        # ----------------------------------------------------
 
-        # Median-line / ADIZ count. Reports use several formulations.
-        median_match = re.search(
-            r"(\d+)\s+out of\s+\d+\s+sorties?\s+"
-            r"(?:crossed the median line[^.]*|entered Taiwan[^.]*ADIZ)",
+        activity_match = re.search(
+            r"(\d+)\s+sorties?\s+of\s+PLA\s+aircraft"
+            r".{0,200}?"
+            r"(\d+)\s+PLAN\s+ships"
+            r".{0,120}?"
+            r"(\d+)\s+official\s+ships",
             text,
             re.I,
         )
-        if median_match:
-            median_adiz = int(median_match.group(1))
+
+        if activity_match:
+
+            aircraft = int(
+                activity_match.group(1)
+            )
+
+            plan = int(
+                activity_match.group(2)
+            )
+
+            official = int(
+                activity_match.group(3)
+            )
+
         else:
-            entered_match = re.search(
-                r"(\d+)\s+out of\s+\d+\s+sorties?\s+entered Taiwan[^.]*ADIZ",
+
+            ship_match = re.search(
+                r"(\d+)\s+PLAN\s+ships"
+                r".{0,120}?"
+                r"(\d+)\s+official\s+ships",
                 text,
                 re.I,
             )
-            median_adiz = int(entered_match.group(1)) if entered_match else 0
+
+            if not ship_match:
+                return None, (
+                    "Activity sentence not parsed"
+                )
+
+            aircraft = 0
+
+            plan = int(
+                ship_match.group(1)
+            )
+
+            official = int(
+                ship_match.group(2)
+            )
+
+        # ----------------------------------------------------
+        # MEDIAN LINE / ADIZ
+        # ----------------------------------------------------
+
+        median_match = re.search(
+            r"(\d+)\s+out\s+of\s+\d+\s+sorties?"
+            r".{0,150}?"
+            r"(?:crossed the median line|"
+            r"entered Taiwan)"
+            r".{0,150}?ADIZ",
+            text,
+            re.I,
+        )
+
+        if median_match:
+
+            median_adiz = int(
+                median_match.group(1)
+            )
+
+        else:
+
+            entered_match = re.search(
+                r"(\d+)\s+out\s+of\s+\d+\s+sorties?"
+                r".{0,100}?"
+                r"entered Taiwan"
+                r".{0,100}?ADIZ",
+                text,
+                re.I,
+            )
+
+            if entered_match:
+                median_adiz = int(
+                    entered_match.group(1)
+                )
+            else:
+                median_adiz = 0
+
+        # ----------------------------------------------------
+        # VALIDATION
+        # ----------------------------------------------------
+
+        if not report_date:
+            return None, (
+                "Report date not parsed"
+            )
+
+        if not period:
+            return None, (
+                "Observation period not parsed"
+            )
 
         return {
             "Report date": report_date,
@@ -127,389 +376,1071 @@ def parse_mnd_page(url):
             "Status": "PARSED",
         }, None
 
-    except Exception as e:
-        return None, str(e)
+    except Exception as exc:
+        return None, str(exc)
 
 
+# ============================================================
+# DISCOVER MND LINKS
+# ============================================================
+
 @st.cache_data(ttl=1800)
-@st.cache_data(ttl=1800)
-@st.cache_data(ttl=1800)
-def discover_mnd_reports():
-    """Discover recent MND PLA Activity reports.
-    Uses the official list when available and verified official
-    report URLs as a resilient fallback.
+def discover_mnd_links():
+    """
+    Discover official MND PLA Activity pages from the
+    official list page.
     """
 
-    seed_urls = [
-        "https://www.mnd.gov.tw/en/News/PLAAct/87316",
-        "https://www.mnd.gov.tw/en/News/PLAAct/87306",
-        "https://www.mnd.gov.tw/en/News/PLAAct/87302",
-        "https://www.mnd.gov.tw/en/News/PLAAct/87282",
-        "https://www.mnd.gov.tw/en/News/PLAAct/87276",
-        "https://www.mnd.gov.tw/en/News/PLAAct/87270",
-        "https://www.mnd.gov.tw/en/News/PLAAct/87257",
-        "https://www.mnd.gov.tw/en/News/PLAAct/87248",
-        "https://www.mnd.gov.tw/en/News/PLAAct/87238",
-    ]
+    result = fetch_url(MND_LIST_URL)
 
-    links = list(seed_urls)
-    errors = []
+    if not result["ok"]:
+        return [], result["error"]
 
-    # Try the official MND index as an additional source.
-    try:
-        r = requests.get(
-            MND_LIST_URL,
-            timeout=20,
-            headers=HEADERS
+    soup = BeautifulSoup(
+        result["text"],
+        "html.parser",
+    )
+
+    links = []
+
+    for a in soup.find_all("a"):
+        href = a.get("href", "")
+
+        if not href:
+            continue
+
+        if "/en/News/PLAAct/" not in href:
+            continue
+
+        if href.startswith("/"):
+            href = MND_BASE + href
+
+        elif href.startswith("./"):
+            href = MND_BASE + "/en/news/" + href[2:]
+
+        links.append(href)
+
+    # Remove duplicates while preserving order.
+    unique_links = list(
+        dict.fromkeys(links)
+    )
+
+    return unique_links, ""
+
+
+# ============================================================
+# AUTOMATIC MND INGESTION
+# ============================================================
+
+@st.cache_data(ttl=1800)
+def automatic_mnd_ingestion():
+
+    links, error = discover_mnd_links()
+
+    if error:
+        return [], {
+            "pages_parsed": 0,
+            "error": error,
+        }
+
+    observations = []
+
+    # Limit requests so the app remains lightweight.
+    for url in links[:20]:
+
+        observation, parse_error = (
+            parse_mnd_page(url)
         )
-        r.raise_for_status()
 
-        soup = BeautifulSoup(r.text, "html.parser")
+        if observation is not None:
+            observations.append(
+                observation
+            )
 
-        for a in soup.find_all("a", href=True):
-            href = a["href"].strip()
-            full = urljoin(MND_BASE, href).rstrip("/")
-
-            if re.search(
-                r"/en/news/plaact/\d+$",
-                full,
-                re.I
-            ):
-                links.append(full)
-
-    except Exception as e:
-        errors.append(("MND_LIST", str(e)))
-
-    # Remove duplicates.
-    links = list(dict.fromkeys(links))
-
-    parsed = []
-
-    for url in links[:40]:
-        item, err = parse_mnd_page(url)
-
-        if item:
-            parsed.append(item)
-        elif err:
-            errors.append((url, err))
-
-    df = pd.DataFrame(parsed)
-
-    if not df.empty:
-        df = df.drop_duplicates(subset=["URL"])
-        df = df.sort_values(
-            "Report date",
-            ascending=False
-        )
-
-    return df, errors
-# Fallback: validated records already established manually.
-# These remain available if MND temporarily blocks automated access.
-# ---------------------------------------------------------
-fallback_valid = pd.DataFrame([
-    ["2026-08-04", "Aug 3 – Aug 4", 6, 6, 7, 6, "VALID", "MND 87238"],
-    ["2026-08-07", "Aug 6 – Aug 7", 10, 6, 6, 3, "VALID", "MND 87270"],
-    ["2026-08-08", "Aug 7 – Aug 8", 14, 11, 6, 8, "VALID", "MND 87276"],
-    ["2026-08-09", "Aug 8 – Aug 9", 4, 2, 6, 9, "VALID", "MND 87282"],
-    ["2026-08-10", "Aug 9 – Aug 10", 1, 1, 9, 11, "VALID", "MND 87302"],
-    ["2026-08-11", "Aug 10 – Aug 11", 2, 2, 7, 6, "VALID", "MND 87306"],
-], columns=[
-    "Report date","Observation period","PLA aircraft",
-    "Median-line/ADIZ","PLAN ships","Official ships","Status","Source"
-])
-
-fallback_conflict = pd.DataFrame([
-    ["2026-08-05", "Aug 4 – Aug 5", 21, 17, 9, 5, "CONFLICT", "MND 87248"],
-    ["2026-08-06", "Aug 4 – Aug 5", 14, 6, 9, 7, "CONFLICT", "MND 87257"],
-], columns=fallback_valid.columns)
+    return observations, {
+        "pages_parsed": len(observations),
+        "error": "",
+    }
 
 
-def normalize_auto(df):
-    if df.empty:
-        return pd.DataFrame(columns=fallback_valid.columns + ["URL"])
+# ============================================================
+# CONFLICT DETECTION
+# ============================================================
 
-    out = df.copy()
-    out["Report date"] = pd.to_datetime(
-        out["Report date"], errors="coerce"
-    ).dt.strftime("%Y-%m-%d")
-    out["Status"] = "PARSED"
-    return out
+def detect_conflicts(observations):
 
+    df = pd.DataFrame(observations)
 
-def apply_conflict_detection(df):
-    """Group by observation period. If one period has different
-    quantitative observations, mark every record in that period
-    as CONFLICT and exclude it from baseline."""
     if df.empty:
         return df, pd.DataFrame()
 
-    work = df.copy()
-    work["Status"] = "VALID"
-
     conflict_rows = []
-    for period, group in work.groupby("Observation period", dropna=False):
-        signatures = group[
-            ["PLA aircraft","Median-line/ADIZ","PLAN ships","Official ships"]
-        ].drop_duplicates()
 
-        if len(signatures) > 1:
-            work.loc[group.index, "Status"] = "CONFLICT"
-            conflict_rows.append(group)
+    for period, group in df.groupby(
+        "Observation period"
+    ):
 
-    conflicts = pd.concat(conflict_rows, ignore_index=True) if conflict_rows else pd.DataFrame(columns=work.columns)
-    return work, conflicts
+        if len(group) <= 1:
+            continue
+
+        quantitative_columns = [
+            "PLA aircraft",
+            "Median-line/ADIZ",
+            "PLAN ships",
+            "Official ships",
+        ]
+
+        unique_values = (
+            group[
+                quantitative_columns
+            ]
+            .drop_duplicates()
+        )
+
+        if len(unique_values) > 1:
+
+            conflict_rows.append(
+                group
+            )
+
+    if conflict_rows:
+
+        conflicts = pd.concat(
+            conflict_rows,
+            ignore_index=True,
+        )
+
+        conflict_periods = set(
+            conflicts[
+                "Observation period"
+            ].tolist()
+        )
+
+        clean = df[
+            ~df[
+                "Observation period"
+            ].isin(conflict_periods)
+        ].copy()
+
+        return clean, conflicts
+
+    return df.copy(), pd.DataFrame()
 
 
-# ---------------------------------------------------------
-# Run ingestion
-# ---------------------------------------------------------
-articles, gdelt_error = fetch_gdelt()
-auto_df, ingest_errors = discover_mnd_reports()
+# ============================================================
+# MERGE AUTOMATIC + FALLBACK
+# ============================================================
 
-if not auto_df.empty:
-    auto_df = normalize_auto(auto_df)
+def build_observation_set():
 
-# Combine automatic data with known validated seed data.
-# Automatic observations are used only when they are parseable.
-frames = [fallback_valid]
-if not auto_df.empty:
-    auto_core = auto_df[
-        ["Report date","Observation period","PLA aircraft",
-         "Median-line/ADIZ","PLAN ships","Official ships","Status","URL"]
+    automatic, meta = (
+        automatic_mnd_ingestion()
+    )
+
+    fallback = FALLBACK_OBSERVATIONS.copy()
+
+    # If automatic ingestion works, use automatic records.
+    # Otherwise use validated fallback observations.
+    if automatic:
+
+        auto_df = pd.DataFrame(
+            automatic
+        )
+
+        # Add fallback records that automatic ingestion
+        # did not retrieve.
+        fallback_df = pd.DataFrame(
+            fallback
+        )
+
+        combined = pd.concat(
+            [
+                auto_df,
+                fallback_df,
+            ],
+            ignore_index=True,
+        )
+
+        # Deduplicate exact records.
+        combined = combined.drop_duplicates(
+            subset=[
+                "Report date",
+                "Observation period",
+                "PLA aircraft",
+                "Median-line/ADIZ",
+                "PLAN ships",
+                "Official ships",
+            ]
+        )
+
+    else:
+
+        combined = pd.DataFrame(
+            fallback
+        )
+
+    # Add known conflict records.
+    conflict_df = pd.DataFrame(
+        CONFLICTING_OBSERVATIONS
+    )
+
+    combined = pd.concat(
+        [
+            combined,
+            conflict_df,
+        ],
+        ignore_index=True,
+    )
+
+    # --------------------------------------------------------
+    # IMPORTANT:
+    # Resolve duplicates by observation period.
+    # Conflicting periods are excluded from baseline.
+    # --------------------------------------------------------
+
+    clean_df, detected_conflicts = (
+        detect_conflicts(combined)
+    )
+
+    # Ensure explicit known conflicts are excluded.
+    known_conflict_periods = set(
+        conflict_df[
+            "Observation period"
+        ].tolist()
+    )
+
+    baseline_df = clean_df[
+        ~clean_df[
+            "Observation period"
+        ].isin(
+            known_conflict_periods
+        )
     ].copy()
-    auto_core["Source"] = auto_core["URL"]
-    auto_core = auto_core.drop(columns=["URL"])
-    frames.append(auto_core)
 
-combined = pd.concat(frames, ignore_index=True)
+    # Sort latest first.
+    if not baseline_df.empty:
+        baseline_df = (
+            baseline_df
+            .sort_values(
+                "Report date",
+                ascending=False,
+            )
+            .reset_index(drop=True)
+        )
 
-# Keep one row per report date + period + quantitative signature.
-combined = combined.drop_duplicates(
-    subset=[
-        "Report date","Observation period","PLA aircraft",
-        "Median-line/ADIZ","PLAN ships","Official ships"
-    ]
+    return (
+        baseline_df,
+        conflict_df,
+        meta,
+    )
+
+
+# ============================================================
+# GDELT
+# ============================================================
+
+@st.cache_data(ttl=900)
+def fetch_gdelt():
+
+    params = {
+        "query": GDELT_QUERY,
+        "mode": "ArtList",
+        "maxrecords": 25,
+        "format": "json",
+        "timespan": "24h",
+    }
+
+    try:
+
+        response = requests.get(
+            GDELT_URL,
+            params=params,
+            timeout=20,
+            headers=HEADERS,
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        articles = data.get(
+            "articles",
+            [],
+        )
+
+        return articles, None
+
+    except Exception as exc:
+
+        return [], str(exc)
+
+
+# ============================================================
+# BASELINE
+# ============================================================
+
+def calculate_baseline(df):
+
+    if df.empty:
+        return {
+            "aircraft": None,
+            "median": None,
+            "plan": None,
+            "official": None,
+        }
+
+    return {
+        "aircraft": round(
+            df["PLA aircraft"].mean(),
+            1,
+        ),
+        "median": round(
+            df["Median-line/ADIZ"].mean(),
+            1,
+        ),
+        "plan": round(
+            df["PLAN ships"].mean(),
+            1,
+        ),
+        "official": round(
+            df["Official ships"].mean(),
+            1,
+        ),
+    }
+
+
+def pct_change(current, baseline):
+
+    if baseline is None:
+        return None
+
+    if baseline == 0:
+        return None
+
+    return (
+        (current - baseline)
+        / baseline
+        * 100
+    )
+
+
+# ============================================================
+# STRATEGIC SIGNAL
+# ============================================================
+
+def calculate_pla_signal(
+    latest,
+    baseline,
+):
+
+    if latest is None:
+        return 0
+
+    components = []
+
+    for key, value in [
+        (
+            "aircraft",
+            latest["PLA aircraft"],
+        ),
+        (
+            "median",
+            latest["Median-line/ADIZ"],
+        ),
+        (
+            "plan",
+            latest["PLAN ships"],
+        ),
+        (
+            "official",
+            latest["Official ships"],
+        ),
+    ]:
+
+        base = baseline.get(key)
+
+        if base is None or base == 0:
+            continue
+
+        ratio = value / base
+
+        # Cap each component.
+        ratio = min(
+            max(ratio, 0),
+            2.0,
+        )
+
+        components.append(
+            ratio
+        )
+
+    if not components:
+        return 0
+
+    average_ratio = sum(
+        components
+    ) / len(components)
+
+    score = int(
+        round(
+            min(
+                max(
+                    average_ratio * 50,
+                    0,
+                ),
+                100,
+            )
+        )
+    )
+
+    return score
+
+
+# ============================================================
+# PAGE HEADER
+# ============================================================
+
+st.title(
+    "🌐 GLOBAL STRATEGIC RADAR"
 )
 
-combined, auto_conflicts = apply_conflict_detection(combined)
+st.caption(
+    "Strategic change detection • "
+    "Early warning • Evidence-based assessment"
+)
 
-# Re-insert the known source conflict if automatic list discovery does
-# not expose the duplicate historical pages.
-for _, row in fallback_conflict.iterrows():
-    if not (
-        (combined["Report date"] == row["Report date"]) &
-        (combined["Observation period"] == row["Observation period"])
-    ).any():
-        combined = pd.concat([combined, pd.DataFrame([row])], ignore_index=True)
+now = datetime.utcnow().strftime(
+    "%Y-%m-%d %H:%M UTC"
+)
 
-# Mark known duplicate Aug 4–5 conflict explicitly.
-mask = combined["Observation period"].astype(str).str.contains("Aug 4", na=False) & \
-       combined["Observation period"].astype(str).str.contains("Aug 5", na=False)
-if mask.any():
-    combined.loc[mask, "Status"] = "CONFLICT"
+st.success(
+    f"● LIVE DATA   Last refresh: {now}"
+)
 
-valid = combined[combined["Status"] == "VALID"].copy()
-conflicts = combined[combined["Status"] == "CONFLICT"].copy()
 
-numeric_cols = ["PLA aircraft","Median-line/ADIZ","PLAN ships","Official ships"]
-for col in numeric_cols:
-    valid[col] = pd.to_numeric(valid[col], errors="coerce")
+# ============================================================
+# DATA LOAD
+# ============================================================
 
-valid = valid.dropna(subset=numeric_cols)
+gdelt_articles, gdelt_error = (
+    fetch_gdelt()
+)
 
-# Latest VALID observation
-valid = valid.sort_values("Report date")
-latest = valid.iloc[-1]
+(
+    observations,
+    conflicts,
+    mnd_meta,
+) = build_observation_set()
 
-baseline = valid[numeric_cols].mean()
 
-def anomaly(current, base):
-    return 0 if base == 0 else ((current - base) / base) * 100
-
-air_anom = anomaly(latest["PLA aircraft"], baseline["PLA aircraft"])
-adiz_anom = anomaly(latest["Median-line/ADIZ"], baseline["Median-line/ADIZ"])
-plan_anom = anomaly(latest["PLAN ships"], baseline["PLAN ships"])
-official_anom = anomaly(latest["Official ships"], baseline["Official ships"])
-
-composite = (air_anom + adiz_anom + plan_anom + official_anom) / 4
-pla_signal = int(max(0, min(100, round(50 + composite / 2))))
-
-# ---------------------------------------------------------
-# UI
-# ---------------------------------------------------------
-st.markdown("""
-<style>
-.block-container{padding-top:1.5rem;padding-bottom:2rem}
-.section-title{font-size:1.35rem;font-weight:750;margin-top:1.2rem}
-.assessment{padding:20px;border-left:4px solid #888;border-radius:8px;background:rgba(128,128,128,.08)}
-.live{display:inline-block;padding:5px 10px;border-radius:12px;background:rgba(0,180,100,.12);font-weight:700}
-</style>
-""", unsafe_allow_html=True)
-
-st.title("🌐 GLOBAL STRATEGIC RADAR")
-st.caption("Strategic change detection • Early warning • Evidence-based assessment")
-now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-st.markdown(f'<span class="live">● LIVE DATA</span> Last refresh: {now}', unsafe_allow_html=True)
+# ============================================================
+# STATUS BANNERS
+# ============================================================
 
 if gdelt_error:
-    st.warning("GDELT live feed unavailable. Information layer is in fallback mode.")
-else:
-    st.success(f"GDELT live feed connected — {len(articles)} relevant articles found in the last 24 hours.")
 
-if not auto_df.empty:
-    st.success(f"MND automatic ingestion connected — {len(auto_df)} PLA Activity pages parsed.")
-else:
-    st.warning("MND automatic ingestion unavailable. Using validated fallback observations.")
+    st.warning(
+        "GDELT live feed unavailable. "
+        "Information layer is in fallback mode."
+    )
 
-# ---------------------------------------------------------
-# TOP METRICS
-# ---------------------------------------------------------
+else:
+
+    st.success(
+        "GDELT live feed connected — "
+        f"{len(gdelt_articles)} relevant articles "
+        "found in the last 24 hours."
+    )
+
+
+if mnd_meta["pages_parsed"] == 0:
+
+    st.warning(
+        "MND automatic ingestion unavailable. "
+        "Using validated fallback observations."
+    )
+
+else:
+
+    st.success(
+        "MND automatic ingestion active — "
+        f"{mnd_meta['pages_parsed']} pages parsed."
+    )
+
+
+# ============================================================
+# METRICS
+# ============================================================
+
+baseline = calculate_baseline(
+    observations
+)
+
+latest = (
+    observations.iloc[0].to_dict()
+    if not observations.empty
+    else None
+)
+
+if latest:
+
+    pla_signal = calculate_pla_signal(
+        latest,
+        baseline,
+    )
+
+else:
+
+    pla_signal = 0
+
+
+# Global strategic pressure remains deliberately
+# marked as demo until a validated composite model exists.
+GLOBAL_PRESSURE = 68
+
+
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Global Strategic Pressure", "68 ↑", "Demo — not model-derived")
-c2.metric("Information Activity", min(100, 25 + len(articles)*3), f"{len(articles)} articles / 24h")
-c3.metric("PLA Activity Signal", pla_signal, f"{len(valid)} validated observations")
-c4.metric("Data Quality", "CONFLICT FLAG" if not conflicts.empty else "OK",
-          f"{len(conflicts)} conflicting records")
+
+with c1:
+    st.metric(
+        "Global Strategic Pressure",
+        f"{GLOBAL_PRESSURE} ↑",
+    )
+    st.caption(
+        "Demo index — not model-derived"
+    )
+
+with c2:
+    st.metric(
+        "Information Activity",
+        len(gdelt_articles),
+    )
+    st.caption(
+        "Articles / 24h"
+    )
+
+with c3:
+    st.metric(
+        "PLA Activity Signal",
+        pla_signal,
+    )
+    st.caption(
+        f"{len(observations)} validated observations"
+    )
+
+with c4:
+
+    if not conflicts.empty:
+
+        st.metric(
+            "Data Quality",
+            "CONFLICT FLAG",
+        )
+
+        st.caption(
+            f"{len(conflicts)} conflicting records"
+        )
+
+    else:
+
+        st.metric(
+            "Data Quality",
+            "OK",
+        )
+
 
 st.divider()
 
-# ---------------------------------------------------------
-# AUTOMATION STATUS
-# ---------------------------------------------------------
-st.markdown('<div class="section-title">🔄 Automated Source Ingestion</div>', unsafe_allow_html=True)
-a1, a2, a3 = st.columns(3)
-a1.metric("MND pages parsed", len(auto_df))
-a2.metric("Validated observations", len(valid))
-a3.metric("Conflicting records", len(conflicts))
 
-st.caption(
-    "The Radar now discovers recent official MND PLA Activity pages automatically. "
-    "If MND blocks the request, the application falls back to the validated seed dataset."
+# ============================================================
+# AUTOMATED SOURCE INGESTION
+# ============================================================
+
+st.subheader(
+    "🔄 Automated Source Ingestion"
 )
 
-# ---------------------------------------------------------
-# SOURCE CONFLICT
-# ---------------------------------------------------------
-st.markdown('<div class="section-title">⚠️ Source Conflict Detection</div>', unsafe_allow_html=True)
+a1, a2, a3 = st.columns(3)
 
-if not conflicts.empty:
-    st.error(
-        "CONFLICT DETECTED: at least one identical observation period contains "
-        "different quantitative observations. Conflicting records are excluded from baseline."
+with a1:
+    st.metric(
+        "MND pages parsed",
+        mnd_meta["pages_parsed"],
     )
+
+with a2:
+    st.metric(
+        "Validated observations",
+        len(observations),
+    )
+
+with a3:
+    st.metric(
+        "Conflicting records",
+        len(conflicts),
+    )
+
+st.caption(
+    "The Radar attempts to discover recent official "
+    "MND PLA Activity pages automatically. If MND blocks "
+    "the request, the application falls back to validated "
+    "source-backed observations."
+)
+
+
+# ============================================================
+# SOURCE CONFLICT
+# ============================================================
+
+st.subheader(
+    "⚠️ Source Conflict Detection"
+)
+
+if conflicts.empty:
+
+    st.success(
+        "No conflicting quantitative observations detected."
+    )
+
+else:
+
+    st.error(
+        "CONFLICT DETECTED: at least one identical "
+        "observation period contains different quantitative "
+        "observations. Conflicting records are excluded "
+        "from the baseline."
+    )
+
+    display_conflicts = conflicts[
+        [
+            "Report date",
+            "Observation period",
+            "PLA aircraft",
+            "Median-line/ADIZ",
+            "PLAN ships",
+            "Official ships",
+            "URL",
+        ]
+    ].copy()
+
+    display_conflicts[
+        "Source"
+    ] = display_conflicts[
+        "URL"
+    ].str.extract(
+        r"/PLAAct/(\d+)"
+    )[0].apply(
+        lambda x:
+        f"MND {x}"
+        if pd.notna(x)
+        else "MND"
+    )
+
+    display_conflicts = (
+        display_conflicts
+        .drop(columns=["URL"])
+    )
+
     st.dataframe(
-        conflicts[
-            ["Report date","Observation period","PLA aircraft",
-             "Median-line/ADIZ","PLAN ships","Official ships","Source"]
-        ].sort_values("Observation period"),
+        display_conflicts,
         use_container_width=True,
         hide_index=True,
     )
-else:
-    st.success("No source conflict detected in the currently ingested observations.")
 
-# ---------------------------------------------------------
-# PLA ACTIVITY
-# ---------------------------------------------------------
-st.markdown('<div class="section-title">🇨🇳 PLA Activity Around Taiwan</div>', unsafe_allow_html=True)
+    st.caption(
+        "Rule: conflicting observations are retained "
+        "for provenance but excluded from quantitative "
+        "baseline calculations until the discrepancy "
+        "is resolved."
+    )
 
-p1, p2, p3, p4 = st.columns(4)
-p1.metric("Latest aircraft", int(latest["PLA aircraft"]), f"{air_anom:+.0f}% vs baseline")
-p2.metric("Latest median-line/ADIZ", int(latest["Median-line/ADIZ"]), f"{adiz_anom:+.0f}% vs baseline")
-p3.metric("Latest PLAN ships", int(latest["PLAN ships"]), f"{plan_anom:+.0f}% vs baseline")
-p4.metric("Latest official ships", int(latest["Official ships"]), f"{official_anom:+.0f}% vs baseline")
 
-st.progress(pla_signal / 100)
-st.write(f"**PLA Activity Signal: {pla_signal}/100**")
+# ============================================================
+# LATEST PLA ACTIVITY
+# ============================================================
 
-# ---------------------------------------------------------
-# BASELINE
-# ---------------------------------------------------------
-st.markdown('<div class="section-title">📊 Validated Observation Set</div>', unsafe_allow_html=True)
-show_cols = [
-    "Report date","Observation period","PLA aircraft",
-    "Median-line/ADIZ","PLAN ships","Official ships","Status","Source"
-]
-st.dataframe(
-    valid[show_cols].sort_values("Report date", ascending=False),
-    use_container_width=True,
-    hide_index=True,
+st.subheader(
+    "🇨🇳 CN PLA Activity Around Taiwan"
 )
+
+if latest:
+
+    l1, l2, l3, l4 = st.columns(4)
+
+    with l1:
+        st.metric(
+            "Latest aircraft",
+            latest["PLA aircraft"],
+        )
+
+        change = pct_change(
+            latest["PLA aircraft"],
+            baseline["aircraft"],
+        )
+
+        if change is not None:
+            st.caption(
+                f"{change:+.0f}% vs baseline"
+            )
+
+    with l2:
+        st.metric(
+            "Latest median-line / ADIZ",
+            latest["Median-line/ADIZ"],
+        )
+
+        change = pct_change(
+            latest["Median-line/ADIZ"],
+            baseline["median"],
+        )
+
+        if change is not None:
+            st.caption(
+                f"{change:+.0f}% vs baseline"
+            )
+
+    with l3:
+        st.metric(
+            "Latest PLAN ships",
+            latest["PLAN ships"],
+        )
+
+        change = pct_change(
+            latest["PLAN ships"],
+            baseline["plan"],
+        )
+
+        if change is not None:
+            st.caption(
+                f"{change:+.0f}% vs baseline"
+            )
+
+    with l4:
+        st.metric(
+            "Latest official ships",
+            latest["Official ships"],
+        )
+
+        change = pct_change(
+            latest["Official ships"],
+            baseline["official"],
+        )
+
+        if change is not None:
+            st.caption(
+                f"{change:+.0f}% vs baseline"
+            )
+
+    st.caption(
+        f"Observation: "
+        f"{latest['Observation period']} "
+        f"• Source: ROC Ministry of National Defense"
+    )
+
+    st.link_button(
+        "Open official MND report",
+        latest["URL"],
+    )
+
+else:
+
+    st.warning(
+        "No validated PLA observation available."
+    )
+
+
+# ============================================================
+# HISTORICAL BASELINE
+# ============================================================
+
+st.subheader(
+    "📊 Historical Baseline"
+)
+
+if len(observations) < 7:
+
+    st.info(
+        "Baseline: NOT YET AVAILABLE. "
+        f"The Radar currently has {len(observations)} "
+        "validated daily observations. "
+        "A 7-day baseline requires at least 7 "
+        "comparable observations."
+    )
+
+else:
+
+    st.success(
+        "7-day baseline available."
+    )
+
 
 b1, b2, b3, b4 = st.columns(4)
-b1.metric("Aircraft baseline", f"{baseline['PLA aircraft']:.1f}")
-b2.metric("Median-line / ADIZ baseline", f"{baseline['Median-line/ADIZ']:.1f}")
-b3.metric("PLAN baseline", f"{baseline['PLAN ships']:.1f}")
-b4.metric("Official ships baseline", f"{baseline['Official ships']:.1f}")
 
-# ---------------------------------------------------------
-# TAIWAN PREPAREDNESS
-# ---------------------------------------------------------
-st.markdown('<div class="section-title">🇹🇼 Taiwan Military Preparedness</div>', unsafe_allow_html=True)
-st.success("ACTIVE — Han Kuang 42")
-st.write(
-    "2026-08-09 • Joint anti-landing • Littoral strike • Beach/shore battle • "
-    "Joint fires • Kill-chain integration • Intelligence transmission / common operational picture"
-)
-st.link_button(
-    "Open official MND Han Kuang 42 report",
-    "https://www.mnd.gov.tw/en/News/PressRelease/87316"
-)
-
-# ---------------------------------------------------------
-# CONVERGENCE
-# ---------------------------------------------------------
-st.markdown('<div class="section-title">⚠️ Signal Convergence</div>', unsafe_allow_html=True)
-x1, x2, x3 = st.columns(3)
-x1.metric("Information Signal", min(100, 25 + len(articles)*3))
-x2.metric("PLA Signal", pla_signal)
-x3.metric("Convergence", "PENDING VALIDATION")
-
-st.warning(
-    "The PLA Activity Signal measures deviation from the validated observation baseline. "
-    "It is not a probability of conflict and should not be interpreted as one."
-)
-
-# ---------------------------------------------------------
-# LIVE INFORMATION
-# ---------------------------------------------------------
-st.markdown('<div class="section-title">📰 Live China–Taiwan Information Signals</div>', unsafe_allow_html=True)
-if not articles.empty:
-    display = articles[["title","domain","published","url"]].copy()
-    display["title"] = display.apply(
-        lambda x: f"[{x['title']}]({x['url']})" if x["url"] else x["title"],
-        axis=1
+with b1:
+    st.metric(
+        "Aircraft baseline",
+        (
+            baseline["aircraft"]
+            if baseline["aircraft"] is not None
+            else "N/A"
+        ),
     )
-    st.dataframe(display[["title","domain","published"]], use_container_width=True, hide_index=True)
-else:
-    st.info("No live articles available.")
 
-# ---------------------------------------------------------
-# ASSESSMENT
-# ---------------------------------------------------------
-st.markdown('<div class="section-title">🇨🇳 China → 🇹🇼 Taiwan Strategic Assessment</div>', unsafe_allow_html=True)
-st.markdown(f"""
-<div class="assessment">
-<b>Assessment status: AUTOMATED INGESTION + DATA QUALITY CONTROL</b><br><br>
-The Radar currently uses <b>{len(valid)}</b> validated MND observations.
-Conflicting source records are retained for provenance but excluded from the quantitative baseline.
-The latest validated observation is <b>{latest["Observation period"]}</b>:
-{int(latest["PLA aircraft"])} aircraft, {int(latest["Median-line/ADIZ"])} median-line/ADIZ,
-{int(latest["PLAN ships"])} PLAN ships and {int(latest["Official ships"])} official ships.<br><br>
-PLA Activity Signal: <b>{pla_signal}/100</b>. This is an anomaly-oriented indicator,
-not a forecast or conflict probability.
-</div>
-""", unsafe_allow_html=True)
+with b2:
+    st.metric(
+        "Median-line / ADIZ baseline",
+        (
+            baseline["median"]
+            if baseline["median"] is not None
+            else "N/A"
+        ),
+    )
 
-st.markdown('<div class="section-title">🚀 Next Layer</div>', unsafe_allow_html=True)
-st.write(
-    "Automated MND ingestion → persistent historical database → 30/90-day baselines → "
-    "source reliability scoring → multi-domain signal convergence → alerts"
+with b3:
+    st.metric(
+        "PLAN baseline",
+        (
+            baseline["plan"]
+            if baseline["plan"] is not None
+            else "N/A"
+        ),
+    )
+
+with b4:
+    st.metric(
+        "Official ships baseline",
+        (
+            baseline["official"]
+            if baseline["official"] is not None
+            else "N/A"
+        ),
+    )
+
+
+# ============================================================
+# VALIDATED OBSERVATION SET
+# ============================================================
+
+st.subheader(
+    "📚 Validated Observation Set"
 )
 
-if ingest_errors:
-    with st.expander("Technical ingestion diagnostics"):
-        st.write(ingest_errors[:10])
+if observations.empty:
 
-st.caption("GLOBAL STRATEGIC RADAR v0.5 • Automated MND ingestion + source conflict detection.")
+    st.warning(
+        "No validated observations."
+    )
 
+else:
+
+    display_df = observations[
+        [
+            "Report date",
+            "Observation period",
+            "PLA aircraft",
+            "Median-line/ADIZ",
+            "PLAN ships",
+            "Official ships",
+            "Status",
+        ]
+    ].copy()
+
+    st.dataframe(
+        display_df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+# ============================================================
+# TAIWAN MILITARY PREPAREDNESS
+# ============================================================
+
+st.subheader(
+    "🇹🇼 TW Taiwan Military Preparedness"
+)
+
+st.success(
+    "ACTIVE — Han Kuang 42"
+)
+
+st.caption(
+    "Source: ROC Ministry of National Defense"
+)
+
+st.caption(
+    "Observation date: 2026-08-09"
+)
+
+st.write(
+    "Observed preparedness indicators:"
+)
+
+p1, p2, p3, p4, p5 = st.columns(5)
+
+with p1:
+    st.checkbox(
+        "Joint anti-landing",
+        value=True,
+        disabled=True,
+    )
+
+with p2:
+    st.checkbox(
+        "Littoral strike",
+        value=True,
+        disabled=True,
+    )
+
+with p3:
+    st.checkbox(
+        "Beach / shore battle",
+        value=True,
+        disabled=True,
+    )
+
+with p4:
+    st.checkbox(
+        "Joint fires",
+        value=True,
+        disabled=True,
+    )
+
+with p5:
+    st.checkbox(
+        "Kill-chain integration",
+        value=True,
+        disabled=True,
+    )
+
+st.link_button(
+    "Open official Han Kuang 42 report",
+    "https://www.mnd.gov.tw/en/News/PressRelease/87316",
+)
+
+
+# ============================================================
+# SIGNAL CONVERGENCE
+# ============================================================
+
+st.subheader(
+    "⚠️ Signal Convergence"
+)
+
+s1, s2, s3 = st.columns(3)
+
+with s1:
+    st.metric(
+        "Information Signal",
+        len(gdelt_articles),
+    )
+
+with s2:
+    st.metric(
+        "PLA Signal",
+        pla_signal,
+    )
+
+with s3:
+
+    if len(observations) >= 7:
+        convergence = "CALCULATED"
+    else:
+        convergence = "PENDING VALIDATION"
+
+    st.metric(
+        "Convergence",
+        convergence,
+    )
+
+st.info(
+    "Convergence means independent signal streams "
+    "point in the same direction. It is NOT a probability "
+    "of conflict and should not be interpreted as one."
+)
+
+
+# ============================================================
+# INFORMATION LAYER
+# ============================================================
+
+st.subheader(
+    "📰 Information Layer — GDELT"
+)
+
+if gdelt_error:
+
+    st.warning(
+        "GDELT is currently unavailable. "
+        "No live information signal is being calculated."
+    )
+
+elif not gdelt_articles:
+
+    st.info(
+        "No relevant GDELT articles returned "
+        "for the current query."
+    )
+
+else:
+
+    rows = []
+
+    for article in gdelt_articles:
+
+        rows.append(
+            {
+                "Title": article.get(
+                    "title",
+                    "",
+                ),
+                "Source": article.get(
+                    "domain",
+                    "",
+                ),
+                "Published": article.get(
+                    "seendate",
+                    "",
+                ),
+                "URL": article.get(
+                    "url",
+                    "",
+                ),
+            }
+        )
+
+    article_df = pd.DataFrame(
+        rows
+    )
+
+    st.dataframe(
+        article_df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+# ============================================================
+# ANALYTICAL DISCLAIMER
+# ============================================================
+
+st.divider()
+
+st.caption(
+    "Analytical note: Information Activity is not "
+    "Military Risk. Media volume may reflect reporting "
+    "intensity rather than a change in military behavior."
+)
+
+st.caption(
+    "PLA Activity Signal is a descriptive deviation "
+    "indicator based on available validated observations. "
+    "It is not a probability of conflict, invasion, "
+    "or military escalation."
+)
+
+st.caption(
+    "Global Strategic Pressure remains a demonstration "
+    "index until a formally specified and validated "
+    "composite model is implemented."
+)
