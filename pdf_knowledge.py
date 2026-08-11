@@ -1,5 +1,3 @@
-
-import io
 import re
 from typing import List, Dict
 
@@ -8,186 +6,117 @@ from pypdf import PdfReader
 
 
 # ============================================================
-# PDF KNOWLEDGE MODULE
+# PDF STRATEGIC KNOWLEDGE MODULE
 # ============================================================
 
-def extract_pdf(pdf_file):
-    """
-    Extract text from an uploaded PDF.
+MAX_FILE_SIZE_MB = 200
+CHUNK_SIZE = 4500
+CHUNK_OVERLAP = 500
 
+
+# ============================================================
+# PDF TEXT EXTRACTION
+# ============================================================
+
+def extract_pdf_text(uploaded_file) -> List[Dict]:
+    """
+    Extract text from a PDF while preserving page numbers.
     Returns:
-        document: dict
-        error: str | None
+        [
+            {
+                "page": 1,
+                "text": "..."
+            },
+            ...
+        ]
     """
 
-    try:
-        pdf_bytes = pdf_file.getvalue()
+    reader = PdfReader(uploaded_file)
 
-        reader = PdfReader(
-            io.BytesIO(pdf_bytes)
-        )
+    pages = []
 
-        pages = []
+    for page_number, page in enumerate(reader.pages, start=1):
+        try:
+            text = page.extract_text() or ""
+        except Exception:
+            text = ""
 
-        for page_number, page in enumerate(
-            reader.pages,
-            start=1
-        ):
+        text = re.sub(r"\s+", " ", text).strip()
 
-            try:
-                text = page.extract_text() or ""
-            except Exception:
-                text = ""
-
-            text = clean_text(text)
-
-            if text:
-                pages.append(
-                    {
-                        "page": page_number,
-                        "text": text,
-                    }
-                )
-
-        full_text = "\n\n".join(
-            [
-                p["text"]
-                for p in pages
-            ]
-        )
-
-        document = {
-            "filename": pdf_file.name,
-            "pages": len(reader.pages),
-            "text_pages": len(pages),
-            "text": full_text,
-            "page_data": pages,
-            "characters": len(full_text),
-            "words": len(
-                full_text.split()
-            ),
-        }
-
-        return document, None
-
-    except Exception as exc:
-
-        return None, str(exc)
-
-
-def clean_text(text: str) -> str:
-    """
-    Normalize extracted PDF text.
-    """
-
-    text = text.replace(
-        "\x00",
-        " "
-    )
-
-    text = re.sub(
-        r"[ \t]+",
-        " ",
-        text
-    )
-
-    text = re.sub(
-        r"\n{3,}",
-        "\n\n",
-        text
-    )
-
-    return text.strip()
-
-
-def split_into_chunks(
-    document: Dict,
-    max_words: int = 900
-) -> List[Dict]:
-    """
-    Split PDF text into chunks while preserving
-    page provenance.
-    """
-
-    chunks = []
-
-    current_text = []
-    current_words = 0
-    start_page = None
-    end_page = None
-
-    for page in document["page_data"]:
-
-        words = page["text"].split()
-
-        if not words:
-            continue
-
-        if start_page is None:
-            start_page = page["page"]
-
-        if (
-            current_words + len(words)
-            > max_words
-            and current_text
-        ):
-
-            chunks.append(
+        if text:
+            pages.append(
                 {
-                    "chunk_id": len(chunks) + 1,
-                    "start_page": start_page,
-                    "end_page": end_page,
-                    "text": " ".join(
-                        current_text
-                    ),
+                    "page": page_number,
+                    "text": text,
                 }
             )
 
-            current_text = []
-            current_words = 0
-            start_page = page["page"]
+    return pages
 
-        current_text.extend(words)
-        current_words += len(words)
-        end_page = page["page"]
 
-    if current_text:
+# ============================================================
+# CHUNKING
+# ============================================================
 
-        chunks.append(
-            {
-                "chunk_id": len(chunks) + 1,
-                "start_page": start_page,
-                "end_page": end_page,
-                "text": " ".join(
-                    current_text
-                ),
-            }
-        )
+def chunk_pages(
+    pages: List[Dict],
+    chunk_size: int = CHUNK_SIZE,
+    overlap: int = CHUNK_OVERLAP,
+) -> List[Dict]:
+
+    chunks = []
+
+    for page in pages:
+        text = page["text"]
+        page_number = page["page"]
+
+        if len(text) <= chunk_size:
+            chunks.append(
+                {
+                    "page": page_number,
+                    "text": text,
+                }
+            )
+            continue
+
+        start = 0
+
+        while start < len(text):
+            end = start + chunk_size
+
+            chunk_text = text[start:end]
+
+            chunks.append(
+                {
+                    "page": page_number,
+                    "text": chunk_text,
+                }
+            )
+
+            if end >= len(text):
+                break
+
+            start = end - overlap
 
     return chunks
 
 
-def search_document(
-    document: Dict,
-    query: str,
-    max_results: int = 8
-) -> List[Dict]:
-    """
-    Simple evidence retrieval from the PDF.
+# ============================================================
+# SEARCH
+# ============================================================
 
-    This is deliberately deterministic:
-    it finds pages containing the query terms.
-    """
+def search_pdf(
+    chunks: List[Dict],
+    query: str,
+    max_results: int = 8,
+) -> List[Dict]:
 
     if not query.strip():
         return []
 
     query_terms = [
         term.lower()
-        for term in re.findall(
-            r"\b\w+\b",
-            query
-        )
+        for term in re.findall(r"\b[\w-]+\b", query)
         if len(term) > 2
     ]
 
@@ -196,312 +125,564 @@ def search_document(
 
     results = []
 
-    for page in document["page_data"]:
+    for chunk in chunks:
 
-        text_lower = page[
-            "text"
-        ].lower()
+        text_lower = chunk["text"].lower()
 
         score = 0
 
         for term in query_terms:
 
-            score += text_lower.count(
-                term
-            )
+            occurrences = text_lower.count(term)
+
+            if occurrences:
+                score += min(occurrences, 10)
+
+                # Extra weight if the term occurs near the beginning
+                if text_lower.find(term) < 500:
+                    score += 1
 
         if score > 0:
 
             results.append(
                 {
-                    "page": page["page"],
+                    "page": chunk["page"],
+                    "text": chunk["text"],
                     "score": score,
-                    "text": page["text"],
                 }
             )
 
     results.sort(
-        key=lambda x: x["score"],
-        reverse=True
+        key=lambda item: item["score"],
+        reverse=True,
     )
 
     return results[:max_results]
 
 
+# ============================================================
+# STRATEGIC KEYWORDS
+# ============================================================
+
+STRATEGIC_KEYWORDS = {
+
+    "Military": [
+        "military",
+        "armed forces",
+        "army",
+        "navy",
+        "air force",
+        "missile",
+        "force posture",
+        "deterrence",
+        "combat",
+        "warfare",
+    ],
+
+    "Geopolitics": [
+        "geopolitical",
+        "geostrategic",
+        "alliance",
+        "rivalry",
+        "great power",
+        "influence",
+        "regional order",
+        "international order",
+    ],
+
+    "China": [
+        "china",
+        "chinese",
+        "pla",
+        "prc",
+        "beijing",
+        "taiwan",
+        "south china sea",
+        "indo-pacific",
+    ],
+
+    "Technology": [
+        "artificial intelligence",
+        "ai",
+        "semiconductor",
+        "cyber",
+        "space",
+        "technology",
+        "dual-use",
+        "quantum",
+    ],
+
+    "Economics": [
+        "economy",
+        "economic",
+        "trade",
+        "investment",
+        "supply chain",
+        "sanctions",
+        "energy",
+        "industrial policy",
+    ],
+
+    "Nuclear": [
+        "nuclear",
+        "strategic forces",
+        "nuclear weapons",
+        "warhead",
+        "icbm",
+        "deterrence",
+        "second strike",
+    ],
+
+    "Information": [
+        "information warfare",
+        "disinformation",
+        "propaganda",
+        "influence operation",
+        "information environment",
+        "psychological",
+    ],
+}
+
+
+# ============================================================
+# STRATEGIC ANALYSIS
+# ============================================================
+
+def analyse_pdf_text(pages: List[Dict]) -> Dict:
+
+    full_text = " ".join(
+        page["text"] for page in pages
+    ).lower()
+
+    findings = {}
+
+    for category, keywords in STRATEGIC_KEYWORDS.items():
+
+        matches = []
+
+        for keyword in keywords:
+
+            count = full_text.count(keyword.lower())
+
+            if count > 0:
+                matches.append(
+                    {
+                        "keyword": keyword,
+                        "count": count,
+                    }
+                )
+
+        matches.sort(
+            key=lambda x: x["count"],
+            reverse=True,
+        )
+
+        findings[category] = matches[:8]
+
+    return findings
+
+
+# ============================================================
+# EXECUTIVE ASSESSMENT
+# ============================================================
+
+def build_executive_assessment(
+    pages: List[Dict],
+    findings: Dict,
+) -> str:
+
+    total_words = sum(
+        len(page["text"].split())
+        for page in pages
+    )
+
+    active_domains = []
+
+    for category, matches in findings.items():
+
+        if matches:
+            active_domains.append(category)
+
+    if not active_domains:
+        return (
+            "The document does not contain sufficient searchable "
+            "evidence to generate a domain-level strategic assessment."
+        )
+
+    domains = ", ".join(active_domains)
+
+    return (
+        f"The document contains approximately {total_words:,} "
+        f"extractable words across {len(pages)} pages. "
+        f"The strongest identifiable strategic domains are: "
+        f"{domains}. "
+        f"This assessment is derived from textual frequency and "
+        f"document evidence only. Keyword frequency does not by "
+        f"itself establish strategic importance, causality, intent, "
+        f"or probability."
+    )
+
+
+# ============================================================
+# PDF KNOWLEDGE SECTION
+# ============================================================
+
 def render_pdf_knowledge_section():
-    """
-    Render the complete PDF Knowledge Base section
-    inside the Streamlit application.
-    """
 
-    st.header(
-        "📚 PDF Strategic Knowledge Base"
+    st.markdown(
+        """
+        <div class="section-title">
+        📚 PDF Strategic Knowledge Base
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-    st.caption(
-        "Upload a book, academic paper, strategic report "
-        "or official document and build an evidence base "
-        "for strategic analysis."
+    st.write(
+        """
+        Upload academic papers, books, research reports, strategic
+        documents, policy papers, or other PDF sources.
+
+        The system extracts the document text, preserves page
+        references, creates searchable knowledge chunks, and
+        generates an evidence-based strategic assessment.
+        """
     )
+
+    st.info(
+        "Research documents are treated as knowledge sources and "
+        "are intentionally separated from operational monitoring data."
+    )
+
+    # ========================================================
+    # UPLOAD
+    # ========================================================
 
     uploaded_file = st.file_uploader(
-        "Upload PDF document",
+        "Upload a PDF document",
         type=["pdf"],
-        accept_multiple_files=False,
-        key="strategic_pdf_upload",
+        key="strategic_pdf_uploader",
+        help="Maximum recommended file size: 200 MB.",
     )
 
     if uploaded_file is None:
 
-        st.info(
-            "Upload a PDF to begin."
+        st.markdown(
+            """
+            ### 📄 No document loaded
+
+            Upload a PDF to create a searchable strategic
+            knowledge source.
+            """
         )
 
         return
 
-    document, error = extract_pdf(
-        uploaded_file
+    # ========================================================
+    # FILE SIZE
+    # ========================================================
+
+    file_size_mb = uploaded_file.size / (
+        1024 * 1024
     )
 
-    if error:
+    if file_size_mb > MAX_FILE_SIZE_MB:
 
         st.error(
-            f"PDF extraction failed: {error}"
+            f"The selected file is {file_size_mb:.1f} MB. "
+            f"The maximum supported size is "
+            f"{MAX_FILE_SIZE_MB} MB."
         )
 
         return
 
-    # --------------------------------------------------------
-    # DOCUMENT METADATA
-    # --------------------------------------------------------
+    # ========================================================
+    # EXTRACT
+    # ========================================================
 
-    st.success(
-        f"Document loaded: {document['filename']}"
-    )
+    try:
 
-    c1, c2, c3, c4 = st.columns(4)
+        with st.spinner(
+            "Extracting text from the PDF..."
+        ):
 
-    with c1:
-        st.metric(
-            "PDF pages",
-            document["pages"]
-        )
+            pages = extract_pdf_text(
+                uploaded_file
+            )
 
-    with c2:
-        st.metric(
-            "Pages with text",
-            document["text_pages"]
-        )
-
-    with c3:
-        st.metric(
-            "Words",
-            f"{document['words']:,}"
-        )
-
-    with c4:
-        st.metric(
-            "Characters",
-            f"{document['characters']:,}"
-        )
-
-    # --------------------------------------------------------
-    # OCR WARNING
-    # --------------------------------------------------------
-
-    if document["text_pages"] == 0:
+    except Exception as exc:
 
         st.error(
-            "No machine-readable text was extracted. "
-            "This PDF is probably scanned and will require OCR."
+            "The PDF could not be processed."
         )
+
+        st.exception(exc)
 
         return
 
-    if (
-        document["text_pages"]
-        < document["pages"] * 0.5
-    ):
+    if not pages:
 
         st.warning(
-            "Only part of the PDF contains extractable text. "
-            "Some pages may be scanned images."
+            "No extractable text was found in this PDF. "
+            "The document may contain scanned images rather "
+            "than machine-readable text."
         )
 
-    # --------------------------------------------------------
-    # CHUNKING
-    # --------------------------------------------------------
+        return
 
-    chunks = split_into_chunks(
-        document
+    # ========================================================
+    # CHUNK
+    # ========================================================
+
+    chunks = chunk_pages(pages)
+
+    # Store in session state
+    st.session_state["pdf_pages"] = pages
+    st.session_state["pdf_chunks"] = chunks
+    st.session_state["pdf_filename"] = uploaded_file.name
+
+    # ========================================================
+    # DOCUMENT SUMMARY
+    # ========================================================
+
+    total_words = sum(
+        len(page["text"].split())
+        for page in pages
     )
 
-    st.session_state[
-        "pdf_document"
-    ] = document
+    st.success(
+        f"Document loaded successfully: "
+        f"{uploaded_file.name}"
+    )
 
-    st.session_state[
-        "pdf_chunks"
-    ] = chunks
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric(
+            "Pages",
+            len(pages),
+        )
+
+    with col2:
+        st.metric(
+            "Extracted Words",
+            f"{total_words:,}",
+        )
+
+    with col3:
+        st.metric(
+            "Knowledge Chunks",
+            len(chunks),
+        )
 
     st.divider()
 
-    # --------------------------------------------------------
-    # SEARCH
-    # --------------------------------------------------------
+    # ========================================================
+    # STRATEGIC ASSESSMENT
+    # ========================================================
 
     st.subheader(
-        "🔎 Search the document"
+        "🎯 Strategic Assessment"
+    )
+
+    findings = analyse_pdf_text(
+        pages
+    )
+
+    assessment = build_executive_assessment(
+        pages,
+        findings,
+    )
+
+    st.write(
+        assessment
+    )
+
+    st.caption(
+        "Analytical caution: keyword frequency is an "
+        "indicator of document emphasis, not a measure "
+        "of strategic importance or probability."
+    )
+
+    # ========================================================
+    # STRATEGIC DOMAINS
+    # ========================================================
+
+    st.subheader(
+        "📊 Strategic Domains"
+    )
+
+    domain_rows = []
+
+    for category, matches in findings.items():
+
+        if matches:
+
+            total = sum(
+                item["count"]
+                for item in matches
+            )
+
+            top_keyword = matches[0]["keyword"]
+
+            domain_rows.append(
+                {
+                    "Domain": category,
+                    "Signal Count": total,
+                    "Leading Term": top_keyword,
+                }
+            )
+
+    if domain_rows:
+
+        st.dataframe(
+            domain_rows,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    else:
+
+        st.info(
+            "No predefined strategic-domain signals "
+            "were detected."
+        )
+
+    # ========================================================
+    # SEARCH
+    # ========================================================
+
+    st.divider()
+
+    st.subheader(
+        "🔎 Search the PDF Knowledge Base"
     )
 
     query = st.text_input(
-        "Search question or concept",
+        "Search query",
         placeholder=(
-            "e.g. strategic competition with China"
+            "Example: Taiwan deterrence, Chinese military "
+            "modernization, nuclear strategy..."
         ),
         key="pdf_search_query",
     )
 
+    max_results = st.slider(
+        "Maximum results",
+        min_value=1,
+        max_value=20,
+        value=8,
+    )
+
     if query:
 
-        results = search_document(
-            document,
-            query
+        results = search_pdf(
+            chunks,
+            query,
+            max_results=max_results,
         )
 
         if not results:
 
             st.warning(
-                "No matching evidence found."
+                "No matching passages were found."
             )
 
         else:
 
-            st.write(
-                f"Found {len(results)} relevant "
-                "evidence segments."
+            st.success(
+                f"{len(results)} relevant passages found."
             )
 
-            for result in results:
+            for index, result in enumerate(
+                results,
+                start=1,
+            ):
 
                 with st.expander(
-                    f"📄 Page {result['page']} "
-                    f"— relevance {result['score']}"
+                    f"Result {index} — Page {result['page']} "
+                    f"— Relevance {result['score']}"
                 ):
+
+                    st.markdown(
+                        f"**Source page:** "
+                        f"{result['page']}"
+                    )
 
                     st.write(
                         result["text"]
                     )
 
-    # --------------------------------------------------------
-    # DOCUMENT PREVIEW
-    # --------------------------------------------------------
+    # ========================================================
+    # DOCUMENT EVIDENCE
+    # ========================================================
 
     st.divider()
 
     st.subheader(
-        "📖 Document preview"
+        "📑 Document Evidence"
     )
 
-    preview_page = st.number_input(
-        "Page",
+    page_number = st.number_input(
+        "Open page",
         min_value=1,
-        max_value=max(
-            1,
-            document["pages"]
-        ),
+        max_value=len(pages),
         value=1,
         step=1,
-        key="pdf_preview_page",
+        key="pdf_page_number",
     )
 
-    selected_pages = [
-        p
-        for p in document["page_data"]
-        if p["page"] == preview_page
-    ]
+    selected_page = next(
+        (
+            page
+            for page in pages
+            if page["page"] == page_number
+        ),
+        None,
+    )
 
-    if selected_pages:
+    if selected_page:
+
+        st.markdown(
+            f"**Page {selected_page['page']}**"
+        )
 
         st.text_area(
             "Extracted text",
-            selected_pages[0]["text"],
-            height=350,
-            key="pdf_preview_text",
+            selected_page["text"],
+            height=300,
+            key=f"pdf_page_text_{page_number}",
         )
 
-    # --------------------------------------------------------
-    # ANALYSIS INTERFACE
-    # --------------------------------------------------------
+    # ========================================================
+    # KNOWLEDGE BASE STATUS
+    # ========================================================
 
     st.divider()
 
     st.subheader(
-        "🧠 Strategic Analysis from PDF"
+        "🧠 Knowledge Base Status"
     )
 
-    analysis_question = st.text_area(
-        "What do you want to analyze?",
-        placeholder=(
-            "Example: What are the main strategic "
-            "implications of China's military modernization?"
-        ),
-        height=120,
-        key="pdf_analysis_question",
+    st.write(
+        f"**Document:** {uploaded_file.name}"
     )
 
-    if st.button(
-        "Analyze PDF Evidence",
-        type="primary",
-        key="analyze_pdf_button",
-    ):
+    st.write(
+        f"**Pages indexed:** {len(pages)}"
+    )
 
-        if not analysis_question.strip():
+    st.write(
+        f"**Searchable chunks:** {len(chunks)}"
+    )
 
-            st.warning(
-                "Enter an analytical question first."
-            )
+    st.write(
+        "**Evidence model:** page-level source preservation"
+    )
 
-        else:
-
-            evidence = search_document(
-                document,
-                analysis_question,
-                max_results=10,
-            )
-
-            if not evidence:
-
-                st.warning(
-                    "No directly relevant evidence "
-                    "was found in the document."
-                )
-
-            else:
-
-                st.markdown(
-                    "### Evidence identified"
-                )
-
-                for item in evidence:
-
-                    st.markdown(
-                        f"**Page {item['page']}**"
-                    )
-
-                    st.write(
-                        item["text"]
-                    )
-
-                    st.caption(
-                        f"Source: "
-                        f"{document['filename']} "
-                        f"— p. {item['page']}"
-                    )
-
-                st.info(
-                    "The current version retrieves and "
-                    "cites evidence from the PDF. "
-                    "The next module will connect this "
-                    "evidence layer to an AI analytical engine."
-                )
+    st.caption(
+        "This module currently performs document extraction, "
+        "search, evidence retrieval, and structured analytical "
+        "screening. It does not claim that keyword frequency "
+        "constitutes an intelligence assessment."
+    )
