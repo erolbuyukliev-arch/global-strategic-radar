@@ -18,7 +18,7 @@ def fetch_gdelt():
     }
     try:
         r = requests.get(GDELT_URL, params=params, timeout=20,
-                          headers={"User-Agent": "GlobalStrategicRadar/0.4"})
+                          headers={"User-Agent": "GlobalStrategicRadar/0.4.1"})
         r.raise_for_status()
         data = r.json()
         rows = [{
@@ -36,23 +36,60 @@ article_count = len(articles)
 information_score = min(100, 25 + article_count * 3)
 
 # =========================================================
-# VERIFIED MND OBSERVATION — 11 AUG 2026
+# VERIFIED MND OBSERVATIONS + DATA QUALITY
 # =========================================================
-pla = {
-    "date": "2026-08-11",
-    "period": "2026-08-10 06:00 → 2026-08-11 06:00 UTC+8",
-    "aircraft": 2,
-    "adiz_entries": 2,
-    "plan_ships": 7,
-    "official_ships": 6,
-    "source": MND_REPORT,
-}
+# IMPORTANT: The two official MND pages dated Aug 5 and Aug 6
+# report the same 4–5 Aug observation period with conflicting
+# values. Therefore that period is explicitly excluded from the
+# baseline rather than silently choosing one value.
+#
+# Valid comparable observations:
+# Aug 4 report: period Aug 3–4
+# Aug 7 report: period Aug 6–7
+# Aug 8 report: period Aug 7–8
+# Aug 9 report: period Aug 8–9
+# Aug 10 report: period Aug 9–10
+# Aug 11 report: period Aug 10–11
 
-# One observation is NOT enough to calculate a historical anomaly.
-# We therefore keep baseline explicitly unavailable rather than inventing it.
-baseline_available = False
-baseline_days = 1
+observations = pd.DataFrame([
+    ["2026-08-04", "Aug 3–4", 6, 6, 7, 6, "VALID", "MND 87238"],
+    ["2026-08-07", "Aug 6–7", 10, 6, 6, 3, "VALID", "MND 87270"],
+    ["2026-08-08", "Aug 7–8", 14, 11, 6, 8, "VALID", "MND 87276"],
+    ["2026-08-09", "Aug 8–9", 4, 2, 6, 9, "VALID", "MND 87282"],
+    ["2026-08-10", "Aug 9–10", 1, 1, 9, 11, "VALID", "MND 87302"],
+    ["2026-08-11", "Aug 10–11", 2, 2, 7, 6, "VALID", "MND 87306"],
+], columns=[
+    "Report date", "Observation period", "PLA aircraft",
+    "Median-line/ADIZ", "PLAN ships", "Official ships", "Status", "Source"
+])
 
+conflict = pd.DataFrame([
+    ["2026-08-05", "Aug 4–5", 21, 17, 9, 5, "CONFLICT", "MND 87248"],
+    ["2026-08-06", "Aug 4–5", 14, 6, 9, 7, "CONFLICT", "MND 87257"],
+], columns=observations.columns)
+
+# Baseline uses only VALID observations.
+baseline = observations[["PLA aircraft","Median-line/ADIZ","PLAN ships","Official ships"]].mean()
+
+latest = observations.iloc[-1]
+
+def anomaly(current, base):
+    if base == 0:
+        return 0.0
+    return ((current - base) / base) * 100
+
+air_anom = anomaly(latest["PLA aircraft"], baseline["PLA aircraft"])
+adiz_anom = anomaly(latest["Median-line/ADIZ"], baseline["Median-line/ADIZ"])
+plan_anom = anomaly(latest["PLAN ships"], baseline["PLAN ships"])
+official_anom = anomaly(latest["Official ships"], baseline["Official ships"])
+
+# Conservative composite: equal weighting of the four observable dimensions.
+composite = (air_anom + adiz_anom + plan_anom + official_anom) / 4
+pla_signal = int(max(0, min(100, round(50 + composite / 2))))
+
+# =========================================================
+# STYLE
+# =========================================================
 st.markdown("""
 <style>
 .block-container{padding-top:1.5rem;padding-bottom:2rem}
@@ -72,17 +109,40 @@ if gdelt_error:
 else:
     st.success(f"GDELT live feed connected — {article_count} relevant articles found in the last 24 hours.")
 
+# =========================================================
+# TOP METRICS
+# =========================================================
 c1, c2, c3, c4 = st.columns(4)
-with c1:
-    st.metric("Global Strategic Pressure", "68 ↑", "Demo — not model-derived")
-with c2:
-    st.metric("Information Activity", information_score, f"{article_count} articles / 24h")
-with c3:
-    st.metric("PLA Activity", "OBSERVED", "MND • 11 Aug 2026")
-with c4:
-    st.metric("Critical Alerts", "0")
+c1.metric("Global Strategic Pressure", "68 ↑", "Demo — not model-derived")
+c2.metric("Information Activity", information_score, f"{article_count} articles / 24h")
+c3.metric("PLA Activity Signal", pla_signal, "6 validated observations")
+c4.metric("Data Quality", "CONFLICT FLAG", "1 period excluded")
 
 st.divider()
+
+# =========================================================
+# DATA QUALITY
+# =========================================================
+st.markdown('<div class="section-title">⚠️ Source Conflict Detection</div>', unsafe_allow_html=True)
+st.error(
+    "CONFLICT DETECTED: MND reports 87248 and 87257 both describe Aug 4–5, "
+    "2026 but publish different observations. The period is excluded from the baseline."
+)
+
+st.dataframe(
+    conflict,
+    use_container_width=True,
+    hide_index=True,
+    column_config={
+        "PLA aircraft": st.column_config.NumberColumn("Aircraft"),
+        "Median-line/ADIZ": st.column_config.NumberColumn("Median-line / ADIZ"),
+    },
+)
+
+st.caption(
+    "Rule: conflicting observations are retained for provenance but excluded from "
+    "quantitative baseline calculations until the source discrepancy is resolved."
+)
 
 # =========================================================
 # PLA ACTIVITY
@@ -90,68 +150,58 @@ st.divider()
 st.markdown('<div class="section-title">🇨🇳 PLA Activity Around Taiwan</div>', unsafe_allow_html=True)
 
 p1, p2, p3, p4 = st.columns(4)
-p1.metric("PLA aircraft", pla["aircraft"])
-p2.metric("ADIZ entries", pla["adiz_entries"])
-p3.metric("PLAN ships", pla["plan_ships"])
-p4.metric("Official ships", pla["official_ships"])
+p1.metric("Latest aircraft", int(latest["PLA aircraft"]), f"{air_anom:+.0f}% vs baseline")
+p2.metric("Latest median-line/ADIZ", int(latest["Median-line/ADIZ"]), f"{adiz_anom:+.0f}% vs baseline")
+p3.metric("Latest PLAN ships", int(latest["PLAN ships"]), f"{plan_anom:+.0f}% vs baseline")
+p4.metric("Latest official ships", int(latest["Official ships"]), f"{official_anom:+.0f}% vs baseline")
 
-st.caption(
-    f"Observation: {pla['period']} • Source: ROC Ministry of National Defense"
+st.progress(pla_signal / 100)
+st.write(f"**PLA Activity Signal: {pla_signal}/100**")
+
+# =========================================================
+# BASELINE TABLE
+# =========================================================
+st.markdown('<div class="section-title">📊 Validated Observation Set</div>', unsafe_allow_html=True)
+st.dataframe(
+    observations,
+    use_container_width=True,
+    hide_index=True,
 )
-st.link_button("Open official MND report", MND_REPORT)
 
-st.markdown("### 📈 Historical Baseline")
-if not baseline_available:
-    st.info(
-        "Baseline: NOT YET AVAILABLE. The Radar currently has 1 validated daily "
-        "observation. A 7-day baseline requires at least 7 comparable observations."
-    )
-    st.progress(1/7)
-    st.caption("Baseline collection: 1 / 7 days")
-else:
-    st.success("7-day baseline available.")
+b1, b2, b3, b4 = st.columns(4)
+b1.metric("Aircraft baseline", f"{baseline['PLA aircraft']:.1f}")
+b2.metric("Median-line / ADIZ baseline", f"{baseline['Median-line/ADIZ']:.1f}")
+b3.metric("PLAN baseline", f"{baseline['PLAN ships']:.1f}")
+b4.metric("Official ships baseline", f"{baseline['Official ships']:.1f}")
 
 # =========================================================
 # TAIWAN PREPAREDNESS
 # =========================================================
 st.markdown('<div class="section-title">🇹🇼 Taiwan Military Preparedness</div>', unsafe_allow_html=True)
 st.success("ACTIVE — Han Kuang 42")
-st.write("Observation date: **2026-08-09**")
-st.write("Source: **ROC Ministry of National Defense — Press Release 87316**")
-st.write("Observed indicators: **joint anti-landing, littoral strike, beach/shore battle, joint fires, kill-chain integration, intelligence transmission and common operational picture.**")
-st.link_button("Open MND Han Kuang 42 report", MND_PREP)
+st.write(
+    "2026-08-09 • Joint anti-landing • Littoral strike • Beach/shore battle • "
+    "Joint fires • Kill-chain integration • Intelligence transmission / common operational picture"
+)
+st.link_button("Open official MND Han Kuang 42 report", MND_PREP)
 
 # =========================================================
 # CONVERGENCE
 # =========================================================
 st.markdown('<div class="section-title">⚠️ Signal Convergence</div>', unsafe_allow_html=True)
+
 x1, x2, x3 = st.columns(3)
-x1.metric("Information", information_score)
-x2.metric("PLA Observation", "2 aircraft / 7 PLAN / 6 official")
-x3.metric("Convergence", "PENDING BASELINE")
+x1.metric("Information Signal", information_score)
+x2.metric("PLA Signal", pla_signal)
+x3.metric("Convergence", "PENDING VALIDATION")
 
 st.warning(
-    "The system does not infer elevated conflict probability from this single observation. "
-    "The next analytical step is comparison against a 7-day baseline."
+    "A higher PLA signal indicates deviation from the validated observation baseline. "
+    "It does not represent a probability of conflict."
 )
 
 # =========================================================
-# HOTSPOTS
-# =========================================================
-hotspots = pd.DataFrame([
-    ["Taiwan Strait",78,"↑↑","Medium"],
-    ["Middle East",81,"↑","Medium"],
-    ["Ukraine",73,"→","Medium"],
-    ["South China Sea",67,"↑","Medium"],
-    ["Korean Peninsula",59,"→","Medium"],
-], columns=["Hotspot","Score","Momentum","Confidence"])
-
-st.markdown('<div class="section-title">🌍 Strategic Hotspots</div>', unsafe_allow_html=True)
-st.dataframe(hotspots, use_container_width=True, hide_index=True,
-             column_config={"Score": st.column_config.ProgressColumn("Pressure", min_value=0, max_value=100, format="%d")})
-
-# =========================================================
-# LIVE ARTICLES
+# LIVE INFORMATION
 # =========================================================
 st.markdown('<div class="section-title">📰 Live China–Taiwan Information Signals</div>', unsafe_allow_html=True)
 if not articles.empty:
@@ -166,17 +216,23 @@ else:
 # ASSESSMENT
 # =========================================================
 st.markdown('<div class="section-title">🇨🇳 China → 🇹🇼 Taiwan Strategic Assessment</div>', unsafe_allow_html=True)
-st.markdown("""
+st.markdown(f"""
 <div class="assessment">
-<b>Assessment: BASELINE BUILDING PHASE</b><br><br>
-The Radar now contains a verified PLA observation from the ROC MND and a separate
-Taiwan preparedness observation from Han Kuang 42. No anomaly or conflict-risk
-judgment is generated until comparable historical observations are collected.
+<b>Assessment status: BASELINE + DATA-QUALITY CONTROL</b><br><br>
+The Radar uses {len(observations)} validated MND observations.
+The conflicting Aug 4–5 records are retained as provenance but excluded from the baseline.
+The latest validated observation is Aug 10–11: 2 aircraft, 2 median-line/ADIZ,
+7 PLAN ships and 6 official ships.<br><br>
+PLA Activity Signal: <b>{pla_signal}/100</b>. This is an anomaly-oriented indicator,
+not a forecast or conflict probability.
 </div>
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="section-title">🚀 Next Layer</div>', unsafe_allow_html=True)
-st.write("Collect daily MND observations → 7-day baseline → anomaly detection → signal convergence → alerts")
+st.write(
+    "Resolve MND source conflict → automate daily MND ingestion → expand baseline "
+    "to 30/90 days → add maritime/geoeconomic signals → validated convergence model"
+)
 
-st.caption("GLOBAL STRATEGIC RADAR v0.4 • Verified observation layer.")
+st.caption("GLOBAL STRATEGIC RADAR v0.4.1 • Data provenance + conflict detection.")
 
