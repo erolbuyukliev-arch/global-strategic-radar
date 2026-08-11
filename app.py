@@ -14,7 +14,7 @@ st.set_page_config(
 def fetch_gdelt():
     url = "https://api.gdeltproject.org/api/v2/doc/doc"
     params = {
-        "query": '(China Taiwan OR Taiwan China) sourcelang:english',
+        "query": '"China" "Taiwan"',
         "mode": "artlist",
         "maxrecords": 25,
         "format": "json",
