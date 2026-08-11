@@ -741,20 +741,20 @@ def render_pdf_knowledge_section():
 
     st.write(
         """
-        Тук качваш научни статии, книги, доклади, стратегически
-        документи и други PDF източници. Системата извлича текста,
-        разделя документа на аналитични сегменти и определя
-        стратегическите домейни, които са най-силно представени.
+        Upload academic papers, books, reports, strategic documents
+        and other PDF sources. The system extracts text, divides the
+        document into analytical segments, and identifies the strategic
+        domains most strongly represented.
         """
     )
 
     st.info(
-        "Важно: PDF анализът е отделен слой от оперативния Radar. "
-        "Документът е източник на знания, а не автоматично доказателство."
+        "Important: PDF analysis is a separate layer from the operational Radar. "
+        "Documents are knowledge sources, not automatic evidence."
     )
 
     uploaded_files = st.file_uploader(
-        "Качи PDF документ",
+        "Upload PDF document",
         type=["pdf"],
         accept_multiple_files=True,
         key="strategic_pdf_uploader",
@@ -779,7 +779,7 @@ def render_pdf_knowledge_section():
             if error:
 
                 st.error(
-                    f"Грешка при {uploaded_file.name}: {error}"
+                    f"Error processing {uploaded_file.name}: {error}"
                 )
 
                 continue
@@ -820,7 +820,7 @@ def render_pdf_knowledge_section():
     if st.session_state.pdf_documents:
 
         st.subheader(
-            "Заредени документи"
+            "Loaded documents"
         )
 
         for document in st.session_state.pdf_documents:
@@ -832,22 +832,22 @@ def render_pdf_knowledge_section():
                 col1, col2, col3 = st.columns(3)
 
                 col1.metric(
-                    "Страници",
+                    "Pages",
                     document["pages"],
                 )
 
                 col2.metric(
-                    "Текстови сегменти",
+                    "Text segments",
                     document["chunks"],
                 )
 
                 col3.metric(
-                    "Думи",
+                    "Words",
                     document["analysis"]["word_count"],
                 )
 
                 st.write(
-                    "Най-силно представени стратегически домейни:"
+                    "Most strongly represented strategic domains:"
                 )
 
                 top_domains = [
@@ -867,12 +867,12 @@ def render_pdf_knowledge_section():
     # --------------------------------------------------------
 
     st.subheader(
-        "🔎 Търсене в PDF базата"
+        "🔎 Search the PDF knowledge base"
     )
 
     search_query = st.text_input(
-        "Търси термин или концепция",
-        placeholder="например: Taiwan, deterrence, nuclear, Belt and Road",
+        "Search for a term or concept",
+        placeholder="e.g. Taiwan, deterrence, nuclear, Belt and Road",
     )
 
     if search_query:
@@ -890,13 +890,13 @@ def render_pdf_knowledge_section():
                 )
 
         st.write(
-            f"Намерени сегменти: **{len(results)}**"
+            f"Segments found: **{len(results)}**"
         )
 
         for result in results[:20]:
 
             with st.expander(
-                f"{result['document']} — страница {result['page']}"
+                f"{result['document']} — page {result['page']}"
             ):
 
                 st.write(
@@ -914,7 +914,7 @@ def render_pdf_knowledge_section():
     if st.session_state.pdf_documents:
 
         selected_document = st.selectbox(
-            "Избери документ",
+            "Select document",
             [
                 d["name"]
                 for d in st.session_state.pdf_documents
@@ -939,9 +939,9 @@ def render_pdf_knowledge_section():
         )
 
         st.write(
-            f"Документът съдържа приблизително "
-            f"**{analysis['word_count']:,} думи** "
-            f"в **{selected['pages']} страници**."
+            f"The document contains approximately "
+            f"**{analysis['word_count']:,} words** "
+            f"across **{selected['pages']} pages**."
         )
 
         st.markdown(
@@ -959,13 +959,13 @@ def render_pdf_knowledge_section():
             for domain, score in top_domains:
 
                 st.write(
-                    f"- **{domain}** — {score} индикатора"
+                    f"- **{domain}** — {score} indicators"
                 )
 
         else:
 
             st.write(
-                "Не са открити достатъчно стратегически ключови термини."
+                "Insufficient strategic keywords were detected."
             )
 
         st.markdown(
@@ -977,11 +977,11 @@ def render_pdf_knowledge_section():
             dominant = top_domains[0][0]
 
             st.write(
-                f"Документът е най-силно ориентиран към "
-                f"**{dominant}**. Това не означава автоматично, "
-                f"че този домейн е най-важният за автора; "
-                f"показателят измерва честота на терминологията, "
-                f"а не причинна значимост."
+                f"The document is most strongly oriented toward "
+                f"**{dominant}**. This does not automatically mean that "
+                f"this domain is the most important to the author; "
+                f"the indicator measures terminology frequency, "
+                f"not causal significance."
             )
 
         st.markdown(
@@ -990,21 +990,18 @@ def render_pdf_knowledge_section():
 
         st.write(
             """
-            Следващото ниво на анализа трябва да различава:
+            The next analytical level should distinguish between:
 
-            **Known** — какво авторът действително твърди;
+            **Known** — what the author actually claims;
 
-            **Inferred** — какви изводи могат да бъдат направени
-            от изложените факти;
+            **Inferred** — what conclusions can be drawn from the stated facts;
 
-            **Contested** — твърдения, за които има конкуриращи се
-            интерпретации;
+            **Contested** — claims for which competing interpretations exist;
 
-            **Unknown** — какво документът не позволява да бъде
-            установено.
+            **Unknown** — what the document does not allow us to establish.
 
-            Това е важно, защото честотата на определена дума
-            не е доказателство за стратегическо намерение.
+            This distinction matters because the frequency of a particular
+            term is not evidence of strategic intent.
             """
         )
 
@@ -1016,7 +1013,7 @@ def render_pdf_knowledge_section():
     else:
 
         st.warning(
-            "Първо качи поне един PDF документ."
+            "Upload at least one PDF document first."
         )
 
 
@@ -1286,7 +1283,7 @@ if baseline:
 else:
 
     st.info(
-        "Недостатъчно валидирани наблюдения за надежден baseline."
+        "Insufficient validated observations for a reliable baseline."
     )
 
 
@@ -1443,4 +1440,5 @@ st.caption(
     "Operational data and research knowledge are intentionally separated."
 )
 st.divider()
+
 
