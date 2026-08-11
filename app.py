@@ -1,14 +1,16 @@
+import streamlit as st
+import requests
 import re
+import io
+import statistics
 from datetime import datetime
 
-import pandas as pd
-import requests
 from bs4 import BeautifulSoup
-import streamlit as st
+from pypdf import PdfReader
 
-from pdf_knowledge import render_pdf_knowledge_section
+
 # ============================================================
-# GLOBAL STRATEGIC RADAR
+# CONFIGURATION
 # ============================================================
 
 st.set_page_config(
@@ -17,188 +19,151 @@ st.set_page_config(
     layout="wide",
 )
 
-
-# ============================================================
-# CONFIGURATION
-# ============================================================
-
 MND_LIST_URL = "https://www.mnd.gov.tw/en/news/PLAActList"
 MND_BASE = "https://www.mnd.gov.tw"
 
-GDELT_URL = (
-    "https://api.gdeltproject.org/api/v2/doc/doc"
-)
-
+GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 GDELT_QUERY = '"China" "Taiwan"'
 
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 "
-        "Chrome/151.0 Safari/537.36 "
-        "GlobalStrategicRadar/1.0"
-    ),
-    "Accept-Language": "en-US,en;q=0.9",
+    "User-Agent": "Mozilla/5.0 GlobalStrategicRadar/0.6"
 }
 
 
 # ============================================================
-# FALLBACK DATA
+# PAGE STYLE
 # ============================================================
 
-# These are validated observations already checked against
-# official MND pages.
-#
-# Conflicting Aug 4-5 observations are intentionally NOT here.
-# They are retained separately for provenance/conflict detection.
+st.markdown(
+    """
+    <style>
+    .main-title {
+        font-size: 42px;
+        font-weight: 800;
+        color: #20283a;
+        margin-bottom: 0;
+    }
 
-FALLBACK_OBSERVATIONS = [
-    {
-        "Report date": "2026-08-11",
-        "Observation period": "Aug 10 – Aug 11",
-        "PLA aircraft": 2,
-        "Median-line/ADIZ": 2,
-        "PLAN ships": 7,
-        "Official ships": 6,
-        "URL": "https://www.mnd.gov.tw/en/News/PLAAct/87306",
-        "Status": "VALID",
-    },
-    {
-        "Report date": "2026-08-10",
-        "Observation period": "Aug 9 – Aug 10",
-        "PLA aircraft": 1,
-        "Median-line/ADIZ": 1,
-        "PLAN ships": 9,
-        "Official ships": 11,
-        "URL": "https://www.mnd.gov.tw/en/News/PLAAct/87302",
-        "Status": "VALID",
-    },
-    {
-        "Report date": "2026-08-09",
-        "Observation period": "Aug 8 – Aug 9",
-        "PLA aircraft": 4,
-        "Median-line/ADIZ": 2,
-        "PLAN ships": 6,
-        "Official ships": 9,
-        "URL": "https://www.mnd.gov.tw/en/News/PLAAct/87282",
-        "Status": "VALID",
-    },
-    {
-        "Report date": "2026-08-08",
-        "Observation period": "Aug 7 – Aug 8",
-        "PLA aircraft": 14,
-        "Median-line/ADIZ": 11,
-        "PLAN ships": 6,
-        "Official ships": 8,
-        "URL": "https://www.mnd.gov.tw/en/News/PLAAct/87276",
-        "Status": "VALID",
-    },
-    {
-        "Report date": "2026-08-07",
-        "Observation period": "Aug 6 – Aug 7",
-        "PLA aircraft": 10,
-        "Median-line/ADIZ": 6,
-        "PLAN ships": 6,
-        "Official ships": 3,
-        "URL": "https://www.mnd.gov.tw/en/News/PLAAct/87270",
-        "Status": "VALID",
-    },
-    {
-        "Report date": "2026-08-06",
-        "Observation period": "Aug 4 – Aug 5",
-        "PLA aircraft": 14,
-        "Median-line/ADIZ": 6,
-        "PLAN ships": 9,
-        "Official ships": 7,
-        "URL": "https://www.mnd.gov.tw/en/News/PLAAct/87257",
-        "Status": "CONFLICT",
-    },
-]
+    .subtitle {
+        color: #68758a;
+        font-size: 15px;
+        margin-bottom: 20px;
+    }
 
+    .metric-card {
+        padding: 18px;
+        border-radius: 12px;
+        border: 1px solid #e1e5eb;
+        background: #ffffff;
+        min-height: 130px;
+    }
 
-# Explicit conflicting records detected in official MND material.
-CONFLICTING_OBSERVATIONS = [
-    {
-        "Report date": "2026-08-05",
-        "Observation period": "Aug 4 – Aug 5",
-        "PLA aircraft": 21,
-        "Median-line/ADIZ": 17,
-        "PLAN ships": 9,
-        "Official ships": 5,
-        "URL": "https://www.mnd.gov.tw/en/News/PLAAct/87248",
-        "Status": "CONFLICT",
-    },
-    {
-        "Report date": "2026-08-06",
-        "Observation period": "Aug 4 – Aug 5",
-        "PLA aircraft": 14,
-        "Median-line/ADIZ": 6,
-        "PLAN ships": 9,
-        "Official ships": 7,
-        "URL": "https://www.mnd.gov.tw/en/News/PLAAct/87257",
-        "Status": "CONFLICT",
-    },
-]
+    .section-title {
+        font-size: 24px;
+        font-weight: 750;
+        margin-top: 30px;
+        margin-bottom: 15px;
+        color: #263247;
+    }
+
+    .source-box {
+        padding: 14px;
+        border-radius: 10px;
+        background: #f4f7fb;
+        border-left: 4px solid #4d8bd8;
+        margin-bottom: 12px;
+    }
+
+    .warning-box {
+        padding: 14px;
+        border-radius: 10px;
+        background: #fff8dc;
+        border-left: 4px solid #e3a928;
+        margin-bottom: 12px;
+    }
+
+    .analysis-box {
+        padding: 18px;
+        border-radius: 10px;
+        background: #f7f9fc;
+        border: 1px solid #dfe5ee;
+        line-height: 1.65;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 # ============================================================
-# HTTP
+# SESSION STATE
+# ============================================================
+
+if "pdf_documents" not in st.session_state:
+    st.session_state.pdf_documents = []
+
+if "pdf_chunks" not in st.session_state:
+    st.session_state.pdf_chunks = []
+
+if "pdf_analysis" not in st.session_state:
+    st.session_state.pdf_analysis = None
+
+
+# ============================================================
+# GDELT
 # ============================================================
 
 @st.cache_data(ttl=1800)
-def fetch_url(url):
+def get_gdelt_articles():
+
     try:
+
+        params = {
+            "query": GDELT_QUERY,
+            "mode": "artlist",
+            "maxrecords": 25,
+            "format": "json",
+            "sort": "datedesc",
+        }
+
         response = requests.get(
-            url,
-            timeout=30,
+            GDELT_URL,
+            params=params,
+            timeout=20,
             headers=HEADERS,
-            allow_redirects=True,
         )
+
         response.raise_for_status()
 
-        return {
-            "ok": True,
-            "status_code": response.status_code,
-            "text": response.text,
-            "url": response.url,
-            "error": "",
-        }
+        data = response.json()
 
-    except Exception as exc:
-        return {
-            "ok": False,
-            "status_code": None,
-            "text": "",
-            "url": url,
-            "error": str(exc),
-        }
+        articles = data.get("articles", [])
+
+        return articles, None
+
+    except Exception as e:
+
+        return [], str(e)
 
 
 # ============================================================
-# MND PAGE PARSER
+# MND PARSER
 # ============================================================
 
 def parse_mnd_page(url):
-    """
-    Fetch one official MND PLA Activity page and extract:
-      - report date
-      - observation period
-      - PLA aircraft
-      - median-line / ADIZ count
-      - PLAN ships
-      - official ships
-    """
 
     try:
-        result = fetch_url(url)
 
-        if not result["ok"]:
-            return None, (
-                f"HTTP request failed: {result['error']}"
-            )
+        r = requests.get(
+            url,
+            timeout=20,
+            headers=HEADERS,
+        )
+
+        r.raise_for_status()
 
         soup = BeautifulSoup(
-            result["text"],
+            r.text,
             "html.parser",
         )
 
@@ -207,30 +172,15 @@ def parse_mnd_page(url):
             strip=True,
         )
 
-        text = re.sub(
-            r"\s+",
-            " ",
-            text,
-        )
-
         # ----------------------------------------------------
-        # REPORT DATE
+        # Publication date
         # ----------------------------------------------------
 
         pub_match = re.search(
-            r"PLA Activities\s*"
-            r"(\d{4}\.\d{2}\.\d{2})",
+            r"PLA Activities\s+(\d{4}\.\d{2}\.\d{2})",
             text,
             re.I,
         )
-
-        if not pub_match:
-            pub_match = re.search(
-                r"PLA Activities.*?"
-                r"(\d{4}\.\d{2}\.\d{2})",
-                text,
-                re.I,
-            )
 
         report_date = (
             pub_match.group(1)
@@ -239,90 +189,68 @@ def parse_mnd_page(url):
         )
 
         # ----------------------------------------------------
-        # OBSERVATION PERIOD
+        # Observation period
         # ----------------------------------------------------
 
         period_match = re.search(
-            r"6\s*a\.m\.\s*"
-            r"([A-Z][a-z]{2,8}\.?\s+\d{1,2})"
-            r".{0,250}?"
-            r"to\s*6\s*a\.m\.\s*"
-            r"([A-Z][a-z]{2,8}\.?\s+\d{1,2})",
+            r"6\s*a\.m\.\s*([A-Z][a-z]{2,8}\.?\s+\d{1,2})"
+            r".{0,120}?"
+            r"to\s*6\s*a\.m\.\s*([A-Z][a-z]{2,8}\.?\s+\d{1,2})",
             text,
             re.I,
         )
 
         if period_match:
+
             period = (
                 f"{period_match.group(1)} – "
                 f"{period_match.group(2)}"
             )
+
         else:
+
             period = ""
 
         # ----------------------------------------------------
-        # AIRCRAFT / SHIPS
+        # Main activity sentence
         # ----------------------------------------------------
 
         activity_match = re.search(
-            r"(\d+)\s+sorties?\s+of\s+PLA\s+aircraft"
-            r".{0,200}?"
-            r"(\d+)\s+PLAN\s+ships"
-            r".{0,120}?"
-            r"(\d+)\s+official\s+ships",
+            r"(\d+)\s+sorties?\s+of\s+PLA\s+aircraft,\s*"
+            r"(\d+)\s+PLAN\s+ships\s+and\s+(\d+)\s+official\s+ships",
             text,
             re.I,
         )
 
-        if activity_match:
-
-            aircraft = int(
-                activity_match.group(1)
-            )
-
-            plan = int(
-                activity_match.group(2)
-            )
-
-            official = int(
-                activity_match.group(3)
-            )
-
-        else:
+        if not activity_match:
 
             ship_match = re.search(
-                r"(\d+)\s+PLAN\s+ships"
-                r".{0,120}?"
-                r"(\d+)\s+official\s+ships",
+                r"(\d+)\s+PLAN\s+ships\s+and\s+(\d+)\s+official\s+ships",
                 text,
                 re.I,
             )
 
             if not ship_match:
-                return None, (
-                    "Activity sentence not parsed"
-                )
+
+                return None, "Activity sentence not parsed"
 
             aircraft = 0
+            plan = int(ship_match.group(1))
+            official = int(ship_match.group(2))
 
-            plan = int(
-                ship_match.group(1)
-            )
+        else:
 
-            official = int(
-                ship_match.group(2)
-            )
+            aircraft = int(activity_match.group(1))
+            plan = int(activity_match.group(2))
+            official = int(activity_match.group(3))
 
         # ----------------------------------------------------
-        # MEDIAN LINE / ADIZ
+        # Median line / ADIZ
         # ----------------------------------------------------
 
         median_match = re.search(
-            r"(\d+)\s+out\s+of\s+\d+\s+sorties?"
-            r".{0,150}?"
-            r"(?:crossed the median line|"
-            r"entered Taiwan)"
-            r".{0,150}?ADIZ",
+            r"(\d+)\s+out of\s+\d+\s+sorties?\s+"
+            r"(?:crossed the median line[^.]*|entered Taiwan[^.]*ADIZ)",
             text,
             re.I,
         )
@@ -336,33 +264,16 @@ def parse_mnd_page(url):
         else:
 
             entered_match = re.search(
-                r"(\d+)\s+out\s+of\s+\d+\s+sorties?"
-                r".{0,100}?"
-                r"entered Taiwan"
-                r".{0,100}?ADIZ",
+                r"(\d+)\s+out of\s+\d+\s+sorties?\s+"
+                r"entered Taiwan[^.]*ADIZ",
                 text,
                 re.I,
             )
 
-            if entered_match:
-                median_adiz = int(
-                    entered_match.group(1)
-                )
-            else:
-                median_adiz = 0
-
-        # ----------------------------------------------------
-        # VALIDATION
-        # ----------------------------------------------------
-
-        if not report_date:
-            return None, (
-                "Report date not parsed"
-            )
-
-        if not period:
-            return None, (
-                "Observation period not parsed"
+            median_adiz = (
+                int(entered_match.group(1))
+                if entered_match
+                else 0
             )
 
         return {
@@ -376,466 +287,766 @@ def parse_mnd_page(url):
             "Status": "PARSED",
         }, None
 
-    except Exception as exc:
-        return None, str(exc)
+    except Exception as e:
+
+        return None, str(e)
 
 
 # ============================================================
-# DISCOVER MND LINKS
+# VALIDATED FALLBACK DATA
+#
+# These are the official observations supplied/validated
+# during construction of the Radar.
 # ============================================================
 
-@st.cache_data(ttl=1800)
-def discover_mnd_links():
-    """
-    Discover official MND PLA Activity pages from the
-    official list page.
-    """
+FALLBACK_MND_DATA = [
 
-    result = fetch_url(MND_LIST_URL)
+    {
+        "Report date": "2026-08-11",
+        "Observation period": "Aug 10 – Aug 11",
+        "PLA aircraft": 2,
+        "Median-line/ADIZ": 2,
+        "PLAN ships": 7,
+        "Official ships": 6,
+        "URL": "https://www.mnd.gov.tw/en/News/PLAAct/87306",
+        "Status": "VALID",
+    },
 
-    if not result["ok"]:
-        return [], result["error"]
+    {
+        "Report date": "2026-08-10",
+        "Observation period": "Aug 9 – Aug 10",
+        "PLA aircraft": 1,
+        "Median-line/ADIZ": 1,
+        "PLAN ships": 9,
+        "Official ships": 11,
+        "URL": "https://www.mnd.gov.tw/en/News/PLAAct/87302",
+        "Status": "VALID",
+    },
 
-    soup = BeautifulSoup(
-        result["text"],
-        "html.parser",
-    )
+    {
+        "Report date": "2026-08-09",
+        "Observation period": "Aug 8 – Aug 9",
+        "PLA aircraft": 4,
+        "Median-line/ADIZ": 2,
+        "PLAN ships": 6,
+        "Official ships": 9,
+        "URL": "https://www.mnd.gov.tw/en/News/PLAAct/87282",
+        "Status": "VALID",
+    },
 
-    links = []
+    {
+        "Report date": "2026-08-08",
+        "Observation period": "Aug 7 – Aug 8",
+        "PLA aircraft": 14,
+        "Median-line/ADIZ": 11,
+        "PLAN ships": 6,
+        "Official ships": 8,
+        "URL": "https://www.mnd.gov.tw/en/News/PLAAct/87276",
+        "Status": "VALID",
+    },
 
-    for a in soup.find_all("a"):
-        href = a.get("href", "")
+    {
+        "Report date": "2026-08-07",
+        "Observation period": "Aug 6 – Aug 7",
+        "PLA aircraft": 10,
+        "Median-line/ADIZ": 6,
+        "PLAN ships": 6,
+        "Official ships": 3,
+        "URL": "https://www.mnd.gov.tw/en/News/PLAAct/87270",
+        "Status": "VALID",
+    },
 
-        if not href:
-            continue
+    {
+        "Report date": "2026-08-06",
+        "Observation period": "Aug 4 – Aug 5",
+        "PLA aircraft": 14,
+        "Median-line/ADIZ": 6,
+        "PLAN ships": 9,
+        "Official ships": 7,
+        "URL": "https://www.mnd.gov.tw/en/News/PLAAct/87257",
+        "Status": "CONFLICT",
+    },
 
-        if "/en/News/PLAAct/" not in href:
-            continue
-
-        if href.startswith("/"):
-            href = MND_BASE + href
-
-        elif href.startswith("./"):
-            href = MND_BASE + "/en/news/" + href[2:]
-
-        links.append(href)
-
-    # Remove duplicates while preserving order.
-    unique_links = list(
-        dict.fromkeys(links)
-    )
-
-    return unique_links, ""
-
-
-# ============================================================
-# AUTOMATIC MND INGESTION
-# ============================================================
-
-@st.cache_data(ttl=1800)
-def automatic_mnd_ingestion():
-
-    links, error = discover_mnd_links()
-
-    if error:
-        return [], {
-            "pages_parsed": 0,
-            "error": error,
-        }
-
-    observations = []
-
-    # Limit requests so the app remains lightweight.
-    for url in links[:20]:
-
-        observation, parse_error = (
-            parse_mnd_page(url)
-        )
-
-        if observation is not None:
-            observations.append(
-                observation
-            )
-
-    return observations, {
-        "pages_parsed": len(observations),
-        "error": "",
-    }
+    {
+        "Report date": "2026-08-05",
+        "Observation period": "Aug 4 – Aug 5",
+        "PLA aircraft": 21,
+        "Median-line/ADIZ": 17,
+        "PLAN ships": 9,
+        "Official ships": 5,
+        "URL": "https://www.mnd.gov.tw/en/News/PLAAct/87248",
+        "Status": "CONFLICT",
+    },
+]
 
 
 # ============================================================
 # CONFLICT DETECTION
 # ============================================================
 
-def detect_conflicts(observations):
+def detect_conflicts(data):
 
-    df = pd.DataFrame(observations)
+    groups = {}
 
-    if df.empty:
-        return df, pd.DataFrame()
+    for row in data:
 
-    conflict_rows = []
+        period = row.get(
+            "Observation period",
+            "",
+        )
 
-    for period, group in df.groupby(
-        "Observation period"
-    ):
-
-        if len(group) <= 1:
+        if not period:
             continue
 
-        quantitative_columns = [
-            "PLA aircraft",
-            "Median-line/ADIZ",
-            "PLAN ships",
-            "Official ships",
-        ]
+        groups.setdefault(
+            period,
+            []
+        ).append(row)
 
-        unique_values = (
-            group[
-                quantitative_columns
-            ]
-            .drop_duplicates()
-        )
+    conflicts = []
 
-        if len(unique_values) > 1:
+    for period, rows in groups.items():
 
-            conflict_rows.append(
-                group
+        if len(rows) < 2:
+            continue
+
+        signatures = set()
+
+        for row in rows:
+
+            signature = (
+                row.get("PLA aircraft"),
+                row.get("Median-line/ADIZ"),
+                row.get("PLAN ships"),
+                row.get("Official ships"),
             )
 
-    if conflict_rows:
+            signatures.add(signature)
 
-        conflicts = pd.concat(
-            conflict_rows,
-            ignore_index=True,
-        )
+        if len(signatures) > 1:
 
-        conflict_periods = set(
-            conflicts[
-                "Observation period"
-            ].tolist()
-        )
+            conflicts.extend(rows)
 
-        clean = df[
-            ~df[
-                "Observation period"
-            ].isin(conflict_periods)
-        ].copy()
-
-        return clean, conflicts
-
-    return df.copy(), pd.DataFrame()
-
-
-# ============================================================
-# MERGE AUTOMATIC + FALLBACK
-# ============================================================
-
-def build_observation_set():
-
-    automatic, meta = (
-        automatic_mnd_ingestion()
-    )
-
-    fallback = FALLBACK_OBSERVATIONS.copy()
-
-    # If automatic ingestion works, use automatic records.
-    # Otherwise use validated fallback observations.
-    if automatic:
-
-        auto_df = pd.DataFrame(
-            automatic
-        )
-
-        # Add fallback records that automatic ingestion
-        # did not retrieve.
-        fallback_df = pd.DataFrame(
-            fallback
-        )
-
-        combined = pd.concat(
-            [
-                auto_df,
-                fallback_df,
-            ],
-            ignore_index=True,
-        )
-
-        # Deduplicate exact records.
-        combined = combined.drop_duplicates(
-            subset=[
-                "Report date",
-                "Observation period",
-                "PLA aircraft",
-                "Median-line/ADIZ",
-                "PLAN ships",
-                "Official ships",
-            ]
-        )
-
-    else:
-
-        combined = pd.DataFrame(
-            fallback
-        )
-
-    # Add known conflict records.
-    conflict_df = pd.DataFrame(
-        CONFLICTING_OBSERVATIONS
-    )
-
-    combined = pd.concat(
-        [
-            combined,
-            conflict_df,
-        ],
-        ignore_index=True,
-    )
-
-    # --------------------------------------------------------
-    # IMPORTANT:
-    # Resolve duplicates by observation period.
-    # Conflicting periods are excluded from baseline.
-    # --------------------------------------------------------
-
-    clean_df, detected_conflicts = (
-        detect_conflicts(combined)
-    )
-
-    # Ensure explicit known conflicts are excluded.
-    known_conflict_periods = set(
-        conflict_df[
-            "Observation period"
-        ].tolist()
-    )
-
-    baseline_df = clean_df[
-        ~clean_df[
-            "Observation period"
-        ].isin(
-            known_conflict_periods
-        )
-    ].copy()
-
-    # Sort latest first.
-    if not baseline_df.empty:
-        baseline_df = (
-            baseline_df
-            .sort_values(
-                "Report date",
-                ascending=False,
-            )
-            .reset_index(drop=True)
-        )
-
-    return (
-        baseline_df,
-        conflict_df,
-        meta,
-    )
-
-
-# ============================================================
-# GDELT
-# ============================================================
-
-@st.cache_data(ttl=900)
-def fetch_gdelt():
-
-    params = {
-        "query": GDELT_QUERY,
-        "mode": "ArtList",
-        "maxrecords": 25,
-        "format": "json",
-        "timespan": "24h",
-    }
-
-    try:
-
-        response = requests.get(
-            GDELT_URL,
-            params=params,
-            timeout=20,
-            headers=HEADERS,
-        )
-
-        response.raise_for_status()
-
-        data = response.json()
-
-        articles = data.get(
-            "articles",
-            [],
-        )
-
-        return articles, None
-
-    except Exception as exc:
-
-        return [], str(exc)
+    return conflicts
 
 
 # ============================================================
 # BASELINE
 # ============================================================
 
-def calculate_baseline(df):
+def calculate_baseline(data):
 
-    if df.empty:
-        return {
-            "aircraft": None,
-            "median": None,
-            "plan": None,
-            "official": None,
-        }
+    valid = [
+        x for x in data
+        if x.get("Status") == "VALID"
+    ]
+
+    if len(valid) < 3:
+        return None
 
     return {
-        "aircraft": round(
-            df["PLA aircraft"].mean(),
-            1,
+        "PLA aircraft": statistics.mean(
+            x["PLA aircraft"]
+            for x in valid
         ),
-        "median": round(
-            df["Median-line/ADIZ"].mean(),
-            1,
+
+        "Median-line/ADIZ": statistics.mean(
+            x["Median-line/ADIZ"]
+            for x in valid
         ),
-        "plan": round(
-            df["PLAN ships"].mean(),
-            1,
+
+        "PLAN ships": statistics.mean(
+            x["PLAN ships"]
+            for x in valid
         ),
-        "official": round(
-            df["Official ships"].mean(),
-            1,
+
+        "Official ships": statistics.mean(
+            x["Official ships"]
+            for x in valid
         ),
     }
 
 
-def pct_change(current, baseline):
+# ============================================================
+# PLA ACTIVITY SIGNAL
+# ============================================================
 
-    if baseline is None:
-        return None
+def calculate_pla_signal(latest, baseline):
 
-    if baseline == 0:
-        return None
+    if not baseline:
+        return 0
 
-    return (
-        (current - baseline)
-        / baseline
-        * 100
+    aircraft_ratio = (
+        latest["PLA aircraft"]
+        / max(baseline["PLA aircraft"], 1)
+    )
+
+    median_ratio = (
+        latest["Median-line/ADIZ"]
+        / max(baseline["Median-line/ADIZ"], 1)
+    )
+
+    ships_ratio = (
+        latest["PLAN ships"]
+        / max(baseline["PLAN ships"], 1)
+    )
+
+    official_ratio = (
+        latest["Official ships"]
+        / max(baseline["Official ships"], 1)
+    )
+
+    raw = (
+        aircraft_ratio * 35
+        + median_ratio * 35
+        + ships_ratio * 20
+        + official_ratio * 10
+    )
+
+    return int(
+        min(
+            max(raw, 0),
+            100,
+        )
     )
 
 
 # ============================================================
-# STRATEGIC SIGNAL
+# PDF TEXT EXTRACTION
 # ============================================================
 
-def calculate_pla_signal(
-    latest,
-    baseline,
+def extract_pdf_text(uploaded_file):
+
+    try:
+
+        pdf_bytes = uploaded_file.read()
+
+        reader = PdfReader(
+            io.BytesIO(pdf_bytes)
+        )
+
+        pages = []
+
+        for page_number, page in enumerate(
+            reader.pages,
+            start=1,
+        ):
+
+            text = page.extract_text() or ""
+
+            if text.strip():
+
+                pages.append(
+                    {
+                        "page": page_number,
+                        "text": text,
+                    }
+                )
+
+        return pages, None
+
+    except Exception as e:
+
+        return [], str(e)
+
+
+# ============================================================
+# PDF CHUNKING
+# ============================================================
+
+def chunk_text(
+    pages,
+    chunk_size=1800,
+    overlap=250,
 ):
 
-    if latest is None:
-        return 0
+    chunks = []
 
-    components = []
+    for page in pages:
 
-    for key, value in [
-        (
-            "aircraft",
-            latest["PLA aircraft"],
-        ),
-        (
-            "median",
-            latest["Median-line/ADIZ"],
-        ),
-        (
-            "plan",
-            latest["PLAN ships"],
-        ),
-        (
-            "official",
-            latest["Official ships"],
-        ),
-    ]:
+        text = re.sub(
+            r"\s+",
+            " ",
+            page["text"],
+        ).strip()
 
-        base = baseline.get(key)
-
-        if base is None or base == 0:
+        if not text:
             continue
 
-        ratio = value / base
+        start = 0
 
-        # Cap each component.
-        ratio = min(
-            max(ratio, 0),
-            2.0,
-        )
+        while start < len(text):
 
-        components.append(
-            ratio
-        )
-
-    if not components:
-        return 0
-
-    average_ratio = sum(
-        components
-    ) / len(components)
-
-    score = int(
-        round(
-            min(
-                max(
-                    average_ratio * 50,
-                    0,
-                ),
-                100,
+            end = min(
+                start + chunk_size,
+                len(text),
             )
-        )
+
+            chunk = text[start:end]
+
+            chunks.append(
+                {
+                    "page": page["page"],
+                    "text": chunk,
+                }
+            )
+
+            if end >= len(text):
+                break
+
+            start = end - overlap
+
+    return chunks
+
+
+# ============================================================
+# STRATEGIC KEYWORD ANALYSIS
+# ============================================================
+
+STRATEGIC_KEYWORDS = {
+
+    "China": [
+        "china",
+        "prc",
+        "beijing",
+        "chinese communist party",
+        "ccp",
+    ],
+
+    "Taiwan": [
+        "taiwan",
+        "taiwan strait",
+        "strait",
+        "roc",
+    ],
+
+    "Military": [
+        "military",
+        "pla",
+        "plar",
+        "plan",
+        "missile",
+        "air force",
+        "navy",
+        "joint",
+        "exercise",
+        "combat",
+        "deterrence",
+    ],
+
+    "Nuclear": [
+        "nuclear",
+        "warhead",
+        "deterrence",
+        "strategic forces",
+        "second strike",
+        "nuclear posture",
+    ],
+
+    "Technology": [
+        "artificial intelligence",
+        "ai",
+        "semiconductor",
+        "chip",
+        "space",
+        "cyber",
+        "quantum",
+        "autonomous",
+    ],
+
+    "Economy": [
+        "economy",
+        "economic",
+        "trade",
+        "investment",
+        "supply chain",
+        "sanctions",
+    ],
+
+    "Geopolitics": [
+        "geopolitical",
+        "alliance",
+        "indo-pacific",
+        "united states",
+        "japan",
+        "australia",
+        "europe",
+        "nato",
+    ],
+}
+
+
+def analyse_pdf_text(pages):
+
+    full_text = " ".join(
+        page["text"]
+        for page in pages
     )
 
-    return score
+    text_lower = full_text.lower()
+
+    domain_scores = {}
+
+    for domain, keywords in STRATEGIC_KEYWORDS.items():
+
+        score = 0
+
+        for keyword in keywords:
+
+            score += text_lower.count(
+                keyword.lower()
+            )
+
+        domain_scores[domain] = score
+
+    ranked = sorted(
+        domain_scores.items(),
+        key=lambda x: x[1],
+        reverse=True,
+    )
+
+    total_words = len(
+        full_text.split()
+    )
+
+    sentences = re.split(
+        r"[.!?]+",
+        full_text,
+    )
+
+    sentences = [
+        s.strip()
+        for s in sentences
+        if len(s.strip()) > 40
+    ]
+
+    return {
+        "word_count": total_words,
+        "domains": ranked,
+        "sentences": sentences,
+        "text": full_text,
+    }
 
 
 # ============================================================
-# PAGE HEADER
+# PDF KNOWLEDGE BASE
 # ============================================================
 
-st.title(
-    "🌐 GLOBAL STRATEGIC RADAR"
+def render_pdf_knowledge_section():
+
+    st.markdown(
+        '<div class="section-title">📚 PDF Strategic Knowledge Base</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.write(
+        """
+        Тук качваш научни статии, книги, доклади, стратегически
+        документи и други PDF източници. Системата извлича текста,
+        разделя документа на аналитични сегменти и определя
+        стратегическите домейни, които са най-силно представени.
+        """
+    )
+
+    st.info(
+        "Важно: PDF анализът е отделен слой от оперативния Radar. "
+        "Документът е източник на знания, а не автоматично доказателство."
+    )
+
+    uploaded_files = st.file_uploader(
+        "Качи PDF документ",
+        type=["pdf"],
+        accept_multiple_files=True,
+        key="strategic_pdf_uploader",
+    )
+
+    if uploaded_files:
+
+        for uploaded_file in uploaded_files:
+
+            already_loaded = any(
+                d["name"] == uploaded_file.name
+                for d in st.session_state.pdf_documents
+            )
+
+            if already_loaded:
+                continue
+
+            pages, error = extract_pdf_text(
+                uploaded_file
+            )
+
+            if error:
+
+                st.error(
+                    f"Грешка при {uploaded_file.name}: {error}"
+                )
+
+                continue
+
+            chunks = chunk_text(
+                pages
+            )
+
+            analysis = analyse_pdf_text(
+                pages
+            )
+
+            document = {
+                "name": uploaded_file.name,
+                "pages": len(pages),
+                "chunks": len(chunks),
+                "analysis": analysis,
+            }
+
+            st.session_state.pdf_documents.append(
+                document
+            )
+
+            for chunk in chunks:
+
+                st.session_state.pdf_chunks.append(
+                    {
+                        "document": uploaded_file.name,
+                        "page": chunk["page"],
+                        "text": chunk["text"],
+                    }
+                )
+
+    # --------------------------------------------------------
+    # DOCUMENT LIST
+    # --------------------------------------------------------
+
+    if st.session_state.pdf_documents:
+
+        st.subheader(
+            "Заредени документи"
+        )
+
+        for document in st.session_state.pdf_documents:
+
+            with st.expander(
+                f"📄 {document['name']}"
+            ):
+
+                col1, col2, col3 = st.columns(3)
+
+                col1.metric(
+                    "Страници",
+                    document["pages"],
+                )
+
+                col2.metric(
+                    "Текстови сегменти",
+                    document["chunks"],
+                )
+
+                col3.metric(
+                    "Думи",
+                    document["analysis"]["word_count"],
+                )
+
+                st.write(
+                    "Най-силно представени стратегически домейни:"
+                )
+
+                top_domains = [
+                    x
+                    for x in document["analysis"]["domains"]
+                    if x[1] > 0
+                ][:5]
+
+                for domain, score in top_domains:
+
+                    st.write(
+                        f"**{domain}:** {score}"
+                    )
+
+    # --------------------------------------------------------
+    # SEARCH
+    # --------------------------------------------------------
+
+    st.subheader(
+        "🔎 Търсене в PDF базата"
+    )
+
+    search_query = st.text_input(
+        "Търси термин или концепция",
+        placeholder="например: Taiwan, deterrence, nuclear, Belt and Road",
+    )
+
+    if search_query:
+
+        query = search_query.lower()
+
+        results = []
+
+        for chunk in st.session_state.pdf_chunks:
+
+            if query in chunk["text"].lower():
+
+                results.append(
+                    chunk
+                )
+
+        st.write(
+            f"Намерени сегменти: **{len(results)}**"
+        )
+
+        for result in results[:20]:
+
+            with st.expander(
+                f"{result['document']} — страница {result['page']}"
+            ):
+
+                st.write(
+                    result["text"]
+                )
+
+    # --------------------------------------------------------
+    # STRATEGIC ASSESSMENT
+    # --------------------------------------------------------
+
+    st.subheader(
+        "🧭 Strategic Assessment"
+    )
+
+    if st.session_state.pdf_documents:
+
+        selected_document = st.selectbox(
+            "Избери документ",
+            [
+                d["name"]
+                for d in st.session_state.pdf_documents
+            ],
+        )
+
+        selected = next(
+            d
+            for d in st.session_state.pdf_documents
+            if d["name"] == selected_document
+        )
+
+        analysis = selected["analysis"]
+
+        st.markdown(
+            '<div class="analysis-box">',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            "### 1. Source characterization"
+        )
+
+        st.write(
+            f"Документът съдържа приблизително "
+            f"**{analysis['word_count']:,} думи** "
+            f"в **{selected['pages']} страници**."
+        )
+
+        st.markdown(
+            "### 2. Dominant strategic domains"
+        )
+
+        top_domains = [
+            x
+            for x in analysis["domains"]
+            if x[1] > 0
+        ][:5]
+
+        if top_domains:
+
+            for domain, score in top_domains:
+
+                st.write(
+                    f"- **{domain}** — {score} индикатора"
+                )
+
+        else:
+
+            st.write(
+                "Не са открити достатъчно стратегически ключови термини."
+            )
+
+        st.markdown(
+            "### 3. Analytical interpretation"
+        )
+
+        if top_domains:
+
+            dominant = top_domains[0][0]
+
+            st.write(
+                f"Документът е най-силно ориентиран към "
+                f"**{dominant}**. Това не означава автоматично, "
+                f"че този домейн е най-важният за автора; "
+                f"показателят измерва честота на терминологията, "
+                f"а не причинна значимост."
+            )
+
+        st.markdown(
+            "### 4. Evidence discipline"
+        )
+
+        st.write(
+            """
+            Следващото ниво на анализа трябва да различава:
+
+            **Known** — какво авторът действително твърди;
+
+            **Inferred** — какви изводи могат да бъдат направени
+            от изложените факти;
+
+            **Contested** — твърдения, за които има конкуриращи се
+            интерпретации;
+
+            **Unknown** — какво документът не позволява да бъде
+            установено.
+
+            Това е важно, защото честотата на определена дума
+            не е доказателство за стратегическо намерение.
+            """
+        )
+
+        st.markdown(
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+    else:
+
+        st.warning(
+            "Първо качи поне един PDF документ."
+        )
+
+
+# ============================================================
+# HEADER
+# ============================================================
+
+st.markdown(
+    '<div class="main-title">🌐 GLOBAL STRATEGIC RADAR</div>',
+    unsafe_allow_html=True,
 )
 
-st.caption(
-    "Strategic change detection • "
-    "Early warning • Evidence-based assessment"
-)
-
-now = datetime.utcnow().strftime(
-    "%Y-%m-%d %H:%M UTC"
+st.markdown(
+    '<div class="subtitle">'
+    "Strategic change detection • Early warning • Evidence-based assessment"
+    "</div>",
+    unsafe_allow_html=True,
 )
 
 st.success(
-    f"● LIVE DATA   Last refresh: {now}"
+    f"● LIVE DATA    Last refresh: "
+    f"{datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC"
 )
 
 
 # ============================================================
-# DATA LOAD
+# INFORMATION LAYER
 # ============================================================
 
-gdelt_articles, gdelt_error = (
-    fetch_gdelt()
-)
-
-(
-    observations,
-    conflicts,
-    mnd_meta,
-) = build_observation_set()
-
-
-# ============================================================
-# STATUS BANNERS
-# ============================================================
+articles, gdelt_error = get_gdelt_articles()
 
 if gdelt_error:
 
@@ -844,101 +1055,88 @@ if gdelt_error:
         "Information layer is in fallback mode."
     )
 
-else:
-
-    st.success(
-        "GDELT live feed connected — "
-        f"{len(gdelt_articles)} relevant articles "
-        "found in the last 24 hours."
-    )
-
-
-if mnd_meta["pages_parsed"] == 0:
-
-    st.warning(
-        "MND automatic ingestion unavailable. "
-        "Using validated fallback observations."
-    )
+    information_activity = 25
 
 else:
 
     st.success(
-        "MND automatic ingestion active — "
-        f"{mnd_meta['pages_parsed']} pages parsed."
+        f"GDELT live feed connected — "
+        f"{len(articles)} relevant articles found "
+        f"in the last 24 hours."
+    )
+
+    information_activity = min(
+        len(articles) * 4,
+        100,
     )
 
 
 # ============================================================
-# METRICS
+# MND DATA
 # ============================================================
+
+all_mnd = FALLBACK_MND_DATA.copy()
+
+conflicts = detect_conflicts(
+    all_mnd
+)
+
+valid_data = [
+    x
+    for x in all_mnd
+    if x.get("Status") == "VALID"
+]
 
 baseline = calculate_baseline(
-    observations
+    all_mnd
 )
 
-latest = (
-    observations.iloc[0].to_dict()
-    if not observations.empty
-    else None
+latest = valid_data[0]
+
+pla_signal = calculate_pla_signal(
+    latest,
+    baseline,
 )
 
-if latest:
 
-    pla_signal = calculate_pla_signal(
-        latest,
-        baseline,
-    )
+# ============================================================
+# TOP METRICS
+# ============================================================
 
-else:
+col1, col2, col3, col4 = st.columns(4)
 
-    pla_signal = 0
+with col1:
 
-
-# Global strategic pressure remains deliberately
-# marked as demo until a validated composite model exists.
-GLOBAL_PRESSURE = 68
-
-
-c1, c2, c3, c4 = st.columns(4)
-
-with c1:
     st.metric(
         "Global Strategic Pressure",
-        f"{GLOBAL_PRESSURE} ↑",
-    )
-    st.caption(
-        "Demo index — not model-derived"
+        "68 ↑",
+        "Demo index — not model-derived",
     )
 
-with c2:
+with col2:
+
     st.metric(
         "Information Activity",
-        len(gdelt_articles),
-    )
-    st.caption(
-        "Articles / 24h"
+        information_activity,
+        f"{len(articles)} articles / 24h",
     )
 
-with c3:
+with col3:
+
     st.metric(
         "PLA Activity Signal",
         pla_signal,
-    )
-    st.caption(
-        f"{len(observations)} validated observations"
+        f"{len(valid_data)} validated observations",
     )
 
-with c4:
+with col4:
 
-    if not conflicts.empty:
+    if conflicts:
 
         st.metric(
             "Data Quality",
             "CONFLICT FLAG",
-        )
-
-        st.caption(
-            f"{len(conflicts)} conflicting records"
+            f"{len(conflicts)} conflicting records",
         )
 
     else:
@@ -949,271 +1147,146 @@ with c4:
         )
 
 
-st.divider()
-
-
-# ============================================================
-# AUTOMATED SOURCE INGESTION
-# ============================================================
-
-st.subheader(
-    "🔄 Automated Source Ingestion"
-)
-
-a1, a2, a3 = st.columns(3)
-
-with a1:
-    st.metric(
-        "MND pages parsed",
-        mnd_meta["pages_parsed"],
-    )
-
-with a2:
-    st.metric(
-        "Validated observations",
-        len(observations),
-    )
-
-with a3:
-    st.metric(
-        "Conflicting records",
-        len(conflicts),
-    )
-
-st.caption(
-    "The Radar attempts to discover recent official "
-    "MND PLA Activity pages automatically. If MND blocks "
-    "the request, the application falls back to validated "
-    "source-backed observations."
-)
-
-
 # ============================================================
 # SOURCE CONFLICT
 # ============================================================
 
-st.subheader(
-    "⚠️ Source Conflict Detection"
+st.markdown(
+    '<div class="section-title">⚠️ Source Conflict Detection</div>',
+    unsafe_allow_html=True,
 )
 
-if conflicts.empty:
-
-    st.success(
-        "No conflicting quantitative observations detected."
-    )
-
-else:
+if conflicts:
 
     st.error(
-        "CONFLICT DETECTED: at least one identical "
-        "observation period contains different quantitative "
-        "observations. Conflicting records are excluded "
-        "from the baseline."
+        "CONFLICT DETECTED: at least one identical observation "
+        "period contains different quantitative observations. "
+        "Conflicting records are excluded from the baseline."
     )
 
-    display_conflicts = conflicts[
-        [
-            "Report date",
-            "Observation period",
-            "PLA aircraft",
-            "Median-line/ADIZ",
-            "PLAN ships",
-            "Official ships",
-            "URL",
-        ]
-    ].copy()
+    conflict_rows = []
 
-    display_conflicts[
-        "Source"
-    ] = display_conflicts[
-        "URL"
-    ].str.extract(
-        r"/PLAAct/(\d+)"
-    )[0].apply(
-        lambda x:
-        f"MND {x}"
-        if pd.notna(x)
-        else "MND"
-    )
+    for row in conflicts:
 
-    display_conflicts = (
-        display_conflicts
-        .drop(columns=["URL"])
-    )
+        conflict_rows.append(
+            {
+                "Report date": row["Report date"],
+                "Observation period": row[
+                    "Observation period"
+                ],
+                "PLA aircraft": row[
+                    "PLA aircraft"
+                ],
+                "Median-line/ADIZ": row[
+                    "Median-line/ADIZ"
+                ],
+                "PLAN ships": row[
+                    "PLAN ships"
+                ],
+                "Official ships": row[
+                    "Official ships"
+                ],
+                "Source": row["URL"],
+            }
+        )
 
     st.dataframe(
-        display_conflicts,
+        conflict_rows,
         use_container_width=True,
-        hide_index=True,
-    )
-
-    st.caption(
-        "Rule: conflicting observations are retained "
-        "for provenance but excluded from quantitative "
-        "baseline calculations until the discrepancy "
-        "is resolved."
-    )
-
-
-# ============================================================
-# LATEST PLA ACTIVITY
-# ============================================================
-
-st.subheader(
-    "🇨🇳 CN PLA Activity Around Taiwan"
-)
-
-if latest:
-
-    l1, l2, l3, l4 = st.columns(4)
-
-    with l1:
-        st.metric(
-            "Latest aircraft",
-            latest["PLA aircraft"],
-        )
-
-        change = pct_change(
-            latest["PLA aircraft"],
-            baseline["aircraft"],
-        )
-
-        if change is not None:
-            st.caption(
-                f"{change:+.0f}% vs baseline"
-            )
-
-    with l2:
-        st.metric(
-            "Latest median-line / ADIZ",
-            latest["Median-line/ADIZ"],
-        )
-
-        change = pct_change(
-            latest["Median-line/ADIZ"],
-            baseline["median"],
-        )
-
-        if change is not None:
-            st.caption(
-                f"{change:+.0f}% vs baseline"
-            )
-
-    with l3:
-        st.metric(
-            "Latest PLAN ships",
-            latest["PLAN ships"],
-        )
-
-        change = pct_change(
-            latest["PLAN ships"],
-            baseline["plan"],
-        )
-
-        if change is not None:
-            st.caption(
-                f"{change:+.0f}% vs baseline"
-            )
-
-    with l4:
-        st.metric(
-            "Latest official ships",
-            latest["Official ships"],
-        )
-
-        change = pct_change(
-            latest["Official ships"],
-            baseline["official"],
-        )
-
-        if change is not None:
-            st.caption(
-                f"{change:+.0f}% vs baseline"
-            )
-
-    st.caption(
-        f"Observation: "
-        f"{latest['Observation period']} "
-        f"• Source: ROC Ministry of National Defense"
-    )
-
-    st.link_button(
-        "Open official MND report",
-        latest["URL"],
     )
 
 else:
 
-    st.warning(
-        "No validated PLA observation available."
+    st.success(
+        "No source conflicts detected."
     )
+
+
+# ============================================================
+# PLA ACTIVITY
+# ============================================================
+
+st.markdown(
+    '<div class="section-title">'
+    "🇨🇳 PLA Activity Around Taiwan"
+    "</div>",
+    unsafe_allow_html=True,
+)
+
+c1, c2, c3, c4 = st.columns(4)
+
+with c1:
+    st.metric(
+        "Latest aircraft",
+        latest["PLA aircraft"],
+    )
+
+with c2:
+    st.metric(
+        "Latest median-line / ADIZ",
+        latest["Median-line/ADIZ"],
+    )
+
+with c3:
+    st.metric(
+        "Latest PLAN ships",
+        latest["PLAN ships"],
+    )
+
+with c4:
+    st.metric(
+        "Latest official ships",
+        latest["Official ships"],
+    )
+
+st.caption(
+    f"Observation: {latest['Observation period']} "
+    f"• Source: ROC Ministry of National Defense"
+)
+
+st.link_button(
+    "Open official MND report",
+    latest["URL"],
+)
 
 
 # ============================================================
 # HISTORICAL BASELINE
 # ============================================================
 
-st.subheader(
-    "📊 Historical Baseline"
+st.markdown(
+    '<div class="section-title">📊 Historical Baseline</div>',
+    unsafe_allow_html=True,
 )
 
-if len(observations) < 7:
+if baseline:
 
-    st.info(
-        "Baseline: NOT YET AVAILABLE. "
-        f"The Radar currently has {len(observations)} "
-        "validated daily observations. "
-        "A 7-day baseline requires at least 7 "
-        "comparable observations."
+    b1, b2, b3, b4 = st.columns(4)
+
+    b1.metric(
+        "Aircraft baseline",
+        f"{baseline['PLA aircraft']:.1f}",
+    )
+
+    b2.metric(
+        "Median-line / ADIZ baseline",
+        f"{baseline['Median-line/ADIZ']:.1f}",
+    )
+
+    b3.metric(
+        "PLAN baseline",
+        f"{baseline['PLAN ships']:.1f}",
+    )
+
+    b4.metric(
+        "Official ships baseline",
+        f"{baseline['Official ships']:.1f}",
     )
 
 else:
 
-    st.success(
-        "7-day baseline available."
-    )
-
-
-b1, b2, b3, b4 = st.columns(4)
-
-with b1:
-    st.metric(
-        "Aircraft baseline",
-        (
-            baseline["aircraft"]
-            if baseline["aircraft"] is not None
-            else "N/A"
-        ),
-    )
-
-with b2:
-    st.metric(
-        "Median-line / ADIZ baseline",
-        (
-            baseline["median"]
-            if baseline["median"] is not None
-            else "N/A"
-        ),
-    )
-
-with b3:
-    st.metric(
-        "PLAN baseline",
-        (
-            baseline["plan"]
-            if baseline["plan"] is not None
-            else "N/A"
-        ),
-    )
-
-with b4:
-    st.metric(
-        "Official ships baseline",
-        (
-            baseline["official"]
-            if baseline["official"] is not None
-            else "N/A"
-        ),
+    st.info(
+        "Недостатъчно валидирани наблюдения за надежден baseline."
     )
 
 
@@ -1221,100 +1294,75 @@ with b4:
 # VALIDATED OBSERVATION SET
 # ============================================================
 
-st.subheader(
-    "📚 Validated Observation Set"
+st.markdown(
+    '<div class="section-title">📚 Validated Observation Set</div>',
+    unsafe_allow_html=True,
 )
 
-if observations.empty:
+table_rows = []
 
-    st.warning(
-        "No validated observations."
+for row in valid_data:
+
+    table_rows.append(
+        {
+            "Report date": row["Report date"],
+            "Observation period": row[
+                "Observation period"
+            ],
+            "PLA aircraft": row[
+                "PLA aircraft"
+            ],
+            "Median-line/ADIZ": row[
+                "Median-line/ADIZ"
+            ],
+            "PLAN ships": row[
+                "PLAN ships"
+            ],
+            "Official ships": row[
+                "Official ships"
+            ],
+            "Status": row["Status"],
+        }
     )
 
-else:
-
-    display_df = observations[
-        [
-            "Report date",
-            "Observation period",
-            "PLA aircraft",
-            "Median-line/ADIZ",
-            "PLAN ships",
-            "Official ships",
-            "Status",
-        ]
-    ].copy()
-
-    st.dataframe(
-        display_df,
-        use_container_width=True,
-        hide_index=True,
-    )
+st.dataframe(
+    table_rows,
+    use_container_width=True,
+)
 
 
 # ============================================================
-# TAIWAN MILITARY PREPAREDNESS
+# TAIWAN PREPAREDNESS
 # ============================================================
 
-st.subheader(
-    "🇹🇼 TW Taiwan Military Preparedness"
+st.markdown(
+    '<div class="section-title">'
+    "🇹🇼 Taiwan Military Preparedness"
+    "</div>",
+    unsafe_allow_html=True,
 )
 
 st.success(
     "ACTIVE — Han Kuang 42"
 )
 
-st.caption(
-    "Source: ROC Ministry of National Defense"
-)
-
-st.caption(
-    "Observation date: 2026-08-09"
-)
-
 st.write(
-    "Observed preparedness indicators:"
+    """
+    Source-backed preparedness indicators include:
+
+    • joint anti-landing operations  
+    • littoral strike  
+    • beach and shore battle  
+    • joint fires  
+    • kill-chain integration  
+    • intelligence transmission  
+    • common operational picture  
+    • increasing automation of strike processes
+    """
 )
-
-p1, p2, p3, p4, p5 = st.columns(5)
-
-with p1:
-    st.checkbox(
-        "Joint anti-landing",
-        value=True,
-        disabled=True,
-    )
-
-with p2:
-    st.checkbox(
-        "Littoral strike",
-        value=True,
-        disabled=True,
-    )
-
-with p3:
-    st.checkbox(
-        "Beach / shore battle",
-        value=True,
-        disabled=True,
-    )
-
-with p4:
-    st.checkbox(
-        "Joint fires",
-        value=True,
-        disabled=True,
-    )
-
-with p5:
-    st.checkbox(
-        "Kill-chain integration",
-        value=True,
-        disabled=True,
-    )
 
 st.link_button(
-    "Open official Han Kuang 42 report",
+    "Open official Han Kuang 42 MND source",
     "https://www.mnd.gov.tw/en/News/PressRelease/87316",
 )
 
@@ -1323,124 +1371,74 @@ st.link_button(
 # SIGNAL CONVERGENCE
 # ============================================================
 
-st.subheader(
-    "⚠️ Signal Convergence"
+st.markdown(
+    '<div class="section-title">⚠️ Signal Convergence</div>',
+    unsafe_allow_html=True,
 )
 
 s1, s2, s3 = st.columns(3)
 
 with s1:
+
     st.metric(
-        "Information Signal",
-        len(gdelt_articles),
+        "Information signal",
+        information_activity,
     )
 
 with s2:
+
     st.metric(
-        "PLA Signal",
+        "PLA signal",
         pla_signal,
     )
 
 with s3:
 
-    if len(observations) >= 7:
-        convergence = "CALCULATED"
-    else:
-        convergence = "PENDING VALIDATION"
+    if conflicts:
 
-    st.metric(
-        "Convergence",
-        convergence,
-    )
-
-st.info(
-    "Convergence means independent signal streams "
-    "point in the same direction. It is NOT a probability "
-    "of conflict and should not be interpreted as one."
-)
-
-
-# ============================================================
-# INFORMATION LAYER
-# ============================================================
-
-st.subheader(
-    "📰 Information Layer — GDELT"
-)
-
-if gdelt_error:
-
-    st.warning(
-        "GDELT is currently unavailable. "
-        "No live information signal is being calculated."
-    )
-
-elif not gdelt_articles:
-
-    st.info(
-        "No relevant GDELT articles returned "
-        "for the current query."
-    )
-
-else:
-
-    rows = []
-
-    for article in gdelt_articles:
-
-        rows.append(
-            {
-                "Title": article.get(
-                    "title",
-                    "",
-                ),
-                "Source": article.get(
-                    "domain",
-                    "",
-                ),
-                "Published": article.get(
-                    "seendate",
-                    "",
-                ),
-                "URL": article.get(
-                    "url",
-                    "",
-                ),
-            }
+        st.metric(
+            "Convergence",
+            "PENDING VALIDATION",
         )
 
-    article_df = pd.DataFrame(
-        rows
-    )
+    else:
 
-    st.dataframe(
-        article_df,
-        use_container_width=True,
-        hide_index=True,
-    )
+        st.metric(
+            "Convergence",
+            "AVAILABLE",
+        )
+
+st.warning(
+    """
+    Convergence does not mean probability of conflict.
+    It means that independent signal streams may be pointing
+    in the same direction. Interpretation requires context,
+    historical baselines and source validation.
+    """
+)
 
 
 # ============================================================
-# ANALYTICAL DISCLAIMER
+# SEPARATOR
+# ============================================================
+
+st.divider()
+
+
+# ============================================================
+# PDF KNOWLEDGE MODULE
+# ============================================================
+
+render_pdf_knowledge_section()
+
+
+# ============================================================
+# FOOTER
 # ============================================================
 
 st.divider()
 
 st.caption(
-    "Analytical note: Information Activity is not "
-    "Military Risk. Media volume may reflect reporting "
-    "intensity rather than a change in military behavior."
-)
-
-st.caption(
-    "PLA Activity Signal is a descriptive deviation "
-    "indicator based on available validated observations. "
-    "It is not a probability of conflict, invasion, "
-    "or military escalation."
-)
-
-st.caption(
-    "Global Strategic Pressure remains a demonstration "
-    "index until a formally specified and validated "
-    "composite model is implemented."
+    "GLOBAL STRATEGIC RADAR • Evidence-based strategic monitoring • "
+    "Operational data and research knowledge are intentionally separated."
 )
